@@ -1,5 +1,3 @@
-from pydantic import BaseModel, Field
-from uuid import UUID
 import json
 import logging
 import shutil
@@ -7,7 +5,8 @@ from datetime import date
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -16,17 +15,26 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+
 from database import get_db
+
 
 router = APIRouter(
     prefix="/api/requests",
     tags=["Requests"],
 )
+
 logger = logging.getLogger(__name__)
-UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads" / "requests"
+
+UPLOAD_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "uploads"
+    / "requests"
+)
 
 
 class RequestCategory(str, Enum):
@@ -53,49 +61,128 @@ class Currency(str, Enum):
 
 
 REQUEST_COLUMNS = """
-    id AS request_id, request_number, customer_id,
-    service_type AS request_type, subject, message, category,
-    aircraft_type, aircraft_model, passenger_count, budget, currency,
-    departure AS origin, destination, start_date AS travel_date,
-    full_name, email, mobile_number, country, status, created_at,
-    service_sub_type, end_date, trip_type, additional_requirements,
-    customer_details, service_details, booking_drafts, updated_at
+    id,
+    id AS request_id,
+    request_number,
+    customer_id,
+    request_type,
+    subject,
+    message,
+    service_type,
+    aircraft_type,
+    aircraft_model,
+    people_count,
+    budget,
+    currency,
+    departure,
+    destination,
+    start_date,
+    customer_name,
+    customer_email,
+    customer_mobile,
+    country,
+    status,
+    created_at,
+    service_sub_type,
+    end_date,
+    trip_type,
+    additional_requirements,
+    customer_details,
+    service_details,
+    booking_drafts,
+    updated_at,
+    identity_document,
+    mode,
+    access,
+    department,
+    request_mode
 """
-FIELD_COLUMNS = {"request_type": "service_type", "origin": "departure", "travel_date": "start_date"}
+
+
+def parse_json(value, field_name):
+    if value is None or not value.strip():
+        return None
+
+    try:
+        result = json.loads(value)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must contain valid JSON.",
+        )
+
+    if not isinstance(result, (dict, list)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be a JSON object or array.",
+        )
+
+    return result
 
 
 def with_attachments(db, row):
     result = dict(row)
-    documents = db.execute(text('''SELECT "ID" AS id,
-        "ORIGINAL_FILE_NAME" AS filename, "MIME_TYPE" AS content_type,
-        "STORAGE_PATH" AS path, "FILE_SIZE" AS file_size,
-        "DOCUMENT_TYPE" AS document_type
-        FROM customer_hj."CUSTOMER_REQUEST_DOCUMENTS"
-        WHERE "REQUEST_ID"=:request_id ORDER BY "CREATED_AT", "ID"'''),
-        {"request_id": result["request_id"]}).mappings().all()
-    result["attachments"] = [dict(document) for document in documents]
+
+    documents = db.execute(
+        text("""
+            SELECT
+                "ID" AS id,
+                "ORIGINAL_FILE_NAME" AS filename,
+                "MIME_TYPE" AS content_type,
+                "STORAGE_PATH" AS path,
+                "FILE_SIZE" AS file_size,
+                "DOCUMENT_TYPE" AS document_type
+            FROM customer_hj."CUSTOMER_REQUEST_DOCUMENTS"
+            WHERE "REQUEST_ID" = :request_id
+            ORDER BY "CREATED_AT", "ID"
+        """),
+        {"request_id": result["request_id"]},
+    ).mappings().all()
+
+    result["attachments"] = [
+        dict(document) for document in documents
+    ]
+
     return result
 
 
-@router.post("/", summary="Create New Request", status_code=200)
+@router.post(
+    "/",
+    summary="Create New Request",
+    status_code=200,
+)
 def create_request(
     customer_id: UUID | None = Form(None),
-    category: RequestCategory = Form(RequestCategory.aviation),
+    service_type: RequestCategory = Form(
+        RequestCategory.aviation
+    ),
     aircraft_type: AircraftType | None = Form(None),
     aircraft_model: str | None = Form(None),
-    passenger_count: int | None = Form(None, gt=0),
+    people_count: int | None = Form(None, gt=0),
     budget: Decimal | None = Form(None, ge=0),
     currency: Currency = Form(Currency.inr),
-    origin: str | None = Form(None),
+    departure: str | None = Form(None),
     destination: str | None = Form(None),
-    travel_date: date | None = Form(None),
-    full_name: str | None = Form(None),
-    email: str | None = Form(None),
-    mobile_number: str | None = Form(None),
+    start_date: date | None = Form(None),
+    customer_name: str | None = Form(None),
+    customer_email: str | None = Form(None),
+    customer_mobile: str | None = Form(None),
     country: str | None = Form(None),
     request_type: str = Form("Charter"),
     subject: str | None = Form(None),
     message: str | None = Form(None),
+    service_sub_type: str | None = Form(None),
+    end_date: date | None = Form(None),
+    trip_type: str | None = Form(None),
+    additional_requirements: str | None = Form(None),
+    customer_details: str | None = Form(None),
+    service_details: str | None = Form(None),
+    identity_document: str | None = Form(None),
+    mode: str | None = Form(None),
+    access: str | None = Form(None),
+    department: str | None = Form(None),
+    request_mode: str | None = Form(None),
+    booking_drafts: bool = Form(False),
     attachments: list[UploadFile | str] = File(
         default=None,
         description="Select one or more documents or images.",
@@ -103,92 +190,140 @@ def create_request(
             "items": {
                 "type": "string",
                 "format": "binary",
-            },
+            }
         },
     ),
     db: Session = Depends(get_db),
 ):
     uploaded_attachments = []
+
     for attachment in attachments or []:
         if isinstance(attachment, str):
             if not attachment.strip():
                 continue
+
             raise HTTPException(
                 status_code=400,
                 detail="Please select a file instead of entering text.",
             )
+
         uploaded_attachments.append(attachment)
+
     if customer_id is None:
         raise HTTPException(
             status_code=400,
             detail="Please enter Customer ID.",
         )
+
     contact_details = {
-        "full_name": (full_name or "").strip(),
-        "email": (email or "").strip(),
-        "mobile_number": (mobile_number or "").strip(),
+        "customer_name": (customer_name or "").strip(),
+        "customer_email": (customer_email or "").strip(),
+        "customer_mobile": (customer_mobile or "").strip(),
         "country": (country or "").strip(),
     }
+
     if any(not value for value in contact_details.values()):
         raise HTTPException(
             status_code=400,
-            detail=("Please enter full name, email, " "mobile number, and country."),
+            detail=(
+                "Please enter customer name, email, "
+                "mobile number, and country."
+            ),
         )
-    if category == RequestCategory.aviation:
+
+    if service_type == RequestCategory.aviation:
         if aircraft_type is None:
             raise HTTPException(
                 status_code=400,
                 detail="Please select aircraft type.",
             )
-        if passenger_count is None:
+
+        if people_count is None:
             raise HTTPException(
                 status_code=400,
-                detail="Please enter passenger count.",
+                detail="Please enter people count.",
             )
-        if not origin or not origin.strip():
+
+        if not departure or not departure.strip():
             raise HTTPException(
                 status_code=400,
-                detail="Please enter origin.",
+                detail="Please enter departure.",
             )
+
         if not destination or not destination.strip():
             raise HTTPException(
                 status_code=400,
                 detail="Please enter destination.",
             )
-        if travel_date is None:
+
+        if start_date is None:
             raise HTTPException(
                 status_code=400,
-                detail="Please enter travel date.",
+                detail="Please enter start date.",
             )
-        if origin.strip().casefold() == destination.strip().casefold():
+
+        if departure.strip().casefold() == destination.strip().casefold():
             raise HTTPException(
                 status_code=400,
-                detail="Origin and destination must be different.",
+                detail="Departure and destination must be different.",
             )
+
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="End date cannot be before start date.",
+        )
+
     request_subject = (
-        subject.strip() if subject and subject.strip() else f"{category.value} request"
+        subject.strip()
+        if subject and subject.strip()
+        else f"{service_type.value} request"
     )
+
+    customer_details = parse_json(
+        customer_details,
+        "customer_details",
+    )
+    service_details = parse_json(
+        service_details,
+        "service_details",
+    )
+
     saved_files = []
     saved_paths = []
+
+    # id, request_number, and updated_at use database defaults.
     query = text(f"""
         INSERT INTO customer_hj."CUSTOMER_REQUESTS" (
             customer_id,
-            service_type,
+            request_type,
             subject,
             message,
-            category,
+            service_type,
             aircraft_type,
             aircraft_model,
-            passenger_count,
+            people_count,
             budget,
             currency,
             departure,
             destination,
             start_date,
-            full_name,
-            email,
-            mobile_number,
+            customer_name,
+            customer_email,
+            customer_mobile,
             country,
+            service_sub_type,
+            end_date,
+            trip_type,
+            additional_requirements,
+            customer_details,
+            service_details,
+            identity_document,
+            mode,
+            access,
+            department,
+            request_mode,
+            booking_drafts,
             status,
             created_at
         )
@@ -197,96 +332,188 @@ def create_request(
             :request_type,
             :subject,
             :message,
-            :category,
+            :service_type,
             :aircraft_type,
             :aircraft_model,
-            :passenger_count,
+            :people_count,
             :budget,
             :currency,
-            :origin,
+            :departure,
             :destination,
-            :travel_date,
-            :full_name,
-            :email,
-            :mobile_number,
+            :start_date,
+            :customer_name,
+            :customer_email,
+            :customer_mobile,
             :country,
-            'pending',
+            :service_sub_type,
+            :end_date,
+            :trip_type,
+            :additional_requirements,
+            CAST(:customer_details AS JSONB),
+            CAST(:service_details AS JSONB),
+            :identity_document,
+            :mode,
+            :access,
+            :department,
+            :request_mode,
+            :booking_drafts,
+            'Open',
             CURRENT_TIMESTAMP
         )
         RETURNING {REQUEST_COLUMNS}
     """)
+
     try:
         for uploaded_file in uploaded_attachments:
             if not uploaded_file.filename:
                 continue
-            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+            UPLOAD_DIR.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
             stored_filename = uuid4().hex
             file_path = UPLOAD_DIR / stored_filename
             saved_paths.append(file_path)
+
             with file_path.open("wb") as destination_file:
                 shutil.copyfileobj(
                     uploaded_file.file,
                     destination_file,
                 )
-            saved_files.append(
-                {
-                    "filename": uploaded_file.filename,
-                    "stored_filename": stored_filename,
-                    "content_type": uploaded_file.content_type,
-                    "path": f"uploads/requests/{stored_filename}",
-                }
-            )
+
+            saved_files.append({
+                "filename": uploaded_file.filename,
+                "stored_filename": stored_filename,
+                "content_type": uploaded_file.content_type,
+                "path": f"uploads/requests/{stored_filename}",
+            })
+
         parameters = {
             "customer_id": customer_id,
             "request_type": request_type.strip() or "Charter",
             "subject": request_subject,
             "message": message,
-            "category": category.value,
+            "service_type": service_type.value,
             "aircraft_type": (
-                aircraft_type.value if aircraft_type is not None else None
+                aircraft_type.value
+                if aircraft_type is not None
+                else None
             ),
             "aircraft_model": aircraft_model,
-            "passenger_count": passenger_count,
+            "people_count": people_count,
             "budget": budget,
             "currency": currency.value,
-            "origin": origin.strip() if origin else None,
-            "destination": (destination.strip() if destination else None),
-            "travel_date": travel_date,
+            "departure": departure.strip() if departure else None,
+            "destination": (
+                destination.strip() if destination else None
+            ),
+            "start_date": start_date,
             **contact_details,
-            "attachments": json.dumps(saved_files),
+            "service_sub_type": service_sub_type,
+            "end_date": end_date,
+            "trip_type": trip_type,
+            "additional_requirements": additional_requirements,
+            "customer_details": (
+                json.dumps(customer_details)
+                if customer_details is not None
+                else None
+            ),
+            "service_details": (
+                json.dumps(service_details)
+                if service_details is not None
+                else None
+            ),
+            "identity_document": identity_document,
+            "mode": mode,
+            "access": access,
+            "department": department,
+            "request_mode": request_mode,
+            "booking_drafts": booking_drafts,
         }
-        result = db.execute(query, parameters)
-        created_request = dict(result.mappings().one())
+
+        created_request = dict(
+            db.execute(
+                query,
+                parameters,
+            ).mappings().one()
+        )
+
+        files_with_names = [
+            uploaded_file
+            for uploaded_file in uploaded_attachments
+            if uploaded_file.filename
+        ]
+
         for uploaded, saved_file, saved_path in zip(
-            [f for f in uploaded_attachments if f.filename], saved_files, saved_paths
+            files_with_names,
+            saved_files,
+            saved_paths,
         ):
-            db.execute(text('''INSERT INTO customer_hj."CUSTOMER_REQUEST_DOCUMENTS"
-                ("REQUEST_ID", "CUSTOMER_ID", "STORAGE_PATH", "ORIGINAL_FILE_NAME",
-                 "MIME_TYPE", "FILE_SIZE", "DOCUMENT_TYPE")
-                VALUES (:request_id, :customer_id, :path, :filename, :mime_type,
-                        :file_size, :document_type)'''), {
-                "request_id": created_request["request_id"], "customer_id": customer_id,
-                "path": saved_file["path"], "filename": saved_file["filename"],
-                "mime_type": uploaded.content_type or "application/octet-stream",
-                "file_size": saved_path.stat().st_size, "document_type": "Attachment",
-            })
-        created_request = with_attachments(db, created_request)
+            db.execute(
+                text("""
+                    INSERT INTO customer_hj."CUSTOMER_REQUEST_DOCUMENTS" (
+                        "REQUEST_ID",
+                        "CUSTOMER_ID",
+                        "STORAGE_PATH",
+                        "ORIGINAL_FILE_NAME",
+                        "MIME_TYPE",
+                        "FILE_SIZE",
+                        "DOCUMENT_TYPE"
+                    )
+                    VALUES (
+                        :request_id,
+                        :customer_id,
+                        :path,
+                        :filename,
+                        :mime_type,
+                        :file_size,
+                        :document_type
+                    )
+                """),
+                {
+                    "request_id": created_request["request_id"],
+                    "customer_id": customer_id,
+                    "path": saved_file["path"],
+                    "filename": saved_file["filename"],
+                    "mime_type": (
+                        uploaded.content_type
+                        or "application/octet-stream"
+                    ),
+                    "file_size": saved_path.stat().st_size,
+                    "document_type": "Attachment",
+                },
+            )
+
+        created_request = with_attachments(
+            db,
+            created_request,
+        )
         db.commit()
+
     except (SQLAlchemyError, OSError):
         db.rollback()
+
         for file_path in saved_paths:
             try:
                 file_path.unlink(missing_ok=True)
             except OSError:
-                logger.exception("Failed to remove request attachment.")
+                logger.exception(
+                    "Failed to remove request attachment."
+                )
+
         logger.exception("Failed to create customer request.")
+
         raise HTTPException(
             status_code=500,
             detail="Unable to create request.",
         )
+
     finally:
         for uploaded_file in uploaded_attachments:
             uploaded_file.file.close()
+
     return {
         "message": "Request created successfully",
         "request": created_request,
@@ -307,13 +534,17 @@ def get_all_requests(
         )
         ORDER BY created_at DESC, id DESC
     """)
-    result = db.execute(
+
+    rows = db.execute(
         query,
         {"customer_id": customer_id},
-    )
-    requests = [with_attachments(db, row) for row in result.mappings().all()]
+    ).mappings().all()
+
     return {
-        "requests": requests,
+        "requests": [
+            with_attachments(db, row)
+            for row in rows
+        ]
     }
 
 
@@ -326,20 +557,23 @@ def get_request(
         return {
             "message": "Request ID is required",
         }
+
     query = text(f"""
         SELECT {REQUEST_COLUMNS}
         FROM customer_hj."CUSTOMER_REQUESTS"
         WHERE id = :request_id
     """)
-    result = db.execute(
+
+    request = db.execute(
         query,
         {"request_id": request_id},
-    )
-    request = result.mappings().first()
+    ).mappings().first()
+
     if request is None:
         return {
             "message": "Request not found",
         }
+
     return {
         "request": with_attachments(db, request),
     }
@@ -349,20 +583,32 @@ class UpdateRequestDetails(BaseModel):
     request_type: str | None = None
     subject: str | None = None
     message: str | None = None
-    category: RequestCategory | None = None
+    service_type: RequestCategory | None = None
     aircraft_type: AircraftType | None = None
     aircraft_model: str | None = None
-    passenger_count: int | None = Field(default=None, gt=0)
+    people_count: int | None = Field(default=None, gt=0)
     budget: Decimal | None = Field(default=None, ge=0)
     currency: Currency | None = None
-    origin: str | None = None
+    departure: str | None = None
     destination: str | None = None
-    travel_date: date | None = None
-    full_name: str | None = None
-    email: str | None = None
-    mobile_number: str | None = None
+    start_date: date | None = None
+    customer_name: str | None = None
+    customer_email: str | None = None
+    customer_mobile: str | None = None
     country: str | None = None
     status: str | None = None
+    service_sub_type: str | None = None
+    end_date: date | None = None
+    trip_type: str | None = None
+    additional_requirements: str | None = None
+    customer_details: dict | list | None = None
+    service_details: dict | list | None = None
+    identity_document: str | None = None
+    mode: str | None = None
+    access: str | None = None
+    department: str | None = None
+    request_mode: str | None = None
+    booking_drafts: bool | None = None
 
 
 @router.put("/", summary="Update Request")
@@ -372,114 +618,233 @@ def update_request(
     db: Session = Depends(get_db),
 ):
     if request_id is None:
-        raise HTTPException(400, "Request ID is required.")
+        raise HTTPException(
+            status_code=400,
+            detail="Request ID is required.",
+        )
+
     if data is None:
-        raise HTTPException(400, "Please enter details to update.")
-    updates = data.model_dump(exclude_unset=True, exclude_none=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter details to update.",
+        )
+
+    updates = data.model_dump(
+        exclude_unset=True,
+        exclude_none=True,
+    )
+
     if not updates:
-        raise HTTPException(400, "Please provide at least one field to update.")
-    updates = {k: v.value if isinstance(v, Enum) else v for k, v in updates.items()}
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide at least one field to update.",
+        )
+
+    updates = {
+        key: value.value if isinstance(value, Enum) else value
+        for key, value in updates.items()
+    }
+
     for field in (
         "request_type",
-        "full_name",
-        "email",
-        "mobile_number",
+        "customer_name",
+        "customer_email",
+        "customer_mobile",
         "country",
-        "origin",
+        "departure",
         "destination",
         "status",
     ):
         if field in updates:
             updates[field] = updates[field].strip()
+
             if not updates[field]:
-                raise HTTPException(400, f"{field} cannot be blank.")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field} cannot be blank.",
+                )
+
     try:
-        existing = (
-            db.execute(
-                text(f"""SELECT {REQUEST_COLUMNS} FROM customer_hj."CUSTOMER_REQUESTS"
-            WHERE id = :request_id FOR UPDATE"""),
-                {"request_id": request_id},
-            )
-            .mappings()
-            .first()
-        )
+        existing = db.execute(
+            text(f"""
+                SELECT {REQUEST_COLUMNS}
+                FROM customer_hj."CUSTOMER_REQUESTS"
+                WHERE id = :request_id
+                FOR UPDATE
+            """),
+            {"request_id": request_id},
+        ).mappings().first()
+
         if existing is None:
-            raise HTTPException(404, "Request not found.")
-        merged = {**dict(existing), **updates}
-        if "origin" in updates or "destination" in updates:
-            origin, destination = merged.get("origin"), merged.get("destination")
-            if (
-                origin
-                and destination
-                and origin.strip().casefold() == destination.strip().casefold()
-            ):
-                raise HTTPException(400, "Origin and destination must be different.")
-        assignments = ", ".join(f"{FIELD_COLUMNS.get(column, column)} = :{column}" for column in updates)
-        assignments += ", updated_at = CURRENT_TIMESTAMP"
-        updated = (
-            db.execute(
-                text(f"""UPDATE customer_hj."CUSTOMER_REQUESTS" SET {assignments}
-            WHERE id = :request_id RETURNING {REQUEST_COLUMNS}"""),
-                {**updates, "request_id": request_id},
+            raise HTTPException(
+                status_code=404,
+                detail="Request not found.",
             )
-            .mappings()
-            .one()
+
+        merged = {
+            **dict(existing),
+            **updates,
+        }
+
+        if "departure" in updates or "destination" in updates:
+            departure = merged.get("departure")
+            destination = merged.get("destination")
+
+            if (
+                departure
+                and destination
+                and departure.strip().casefold()
+                == destination.strip().casefold()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Departure and destination must be different.",
+                )
+
+        if merged.get("start_date") and merged.get("end_date"):
+            if merged["end_date"] < merged["start_date"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="End date cannot be before start date.",
+                )
+
+        assignments = ", ".join(
+            f"{column} = CAST(:{column} AS JSONB)"
+            if column in {"customer_details", "service_details"}
+            else f"{column} = :{column}"
+            for column in updates
         )
+
+        assignments += ", updated_at = CURRENT_TIMESTAMP"
+
+        for column in ("customer_details", "service_details"):
+            if column in updates:
+                updates[column] = json.dumps(updates[column])
+
+        updated = db.execute(
+            text(f"""
+                UPDATE customer_hj."CUSTOMER_REQUESTS"
+                SET {assignments}
+                WHERE id = :request_id
+                RETURNING {REQUEST_COLUMNS}
+            """),
+            {
+                **updates,
+                "request_id": request_id,
+            },
+        ).mappings().one()
+
         updated_request = with_attachments(db, updated)
         db.commit()
-        return {"message": "Request updated successfully", "request": updated_request}
+
+        return {
+            "message": "Request updated successfully",
+            "request": updated_request,
+        }
+
     except HTTPException:
         db.rollback()
         raise
+
     except SQLAlchemyError:
         db.rollback()
         logger.exception("Failed to update customer request.")
-        raise HTTPException(500, "Unable to update request.")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to update request.",
+        )
 
 
 @router.delete("/", summary="Delete Request")
-def delete_request(request_id: UUID | None = None, db: Session = Depends(get_db)):
+def delete_request(
+    request_id: UUID | None = None,
+    db: Session = Depends(get_db),
+):
     if request_id is None:
-        raise HTTPException(400, "Request ID is required.")
-    try:
-        saved_attachments = [dict(row) for row in db.execute(
-            text('''DELETE FROM customer_hj."CUSTOMER_REQUEST_DOCUMENTS"
-                WHERE "REQUEST_ID"=:request_id RETURNING "STORAGE_PATH" AS path'''),
-            {"request_id": request_id}).mappings().all()]
-        deleted = (
-            db.execute(
-                text("""DELETE FROM customer_hj."CUSTOMER_REQUESTS"
-            WHERE id = :request_id RETURNING id AS request_id"""),
-                {"request_id": request_id},
-            )
-            .mappings()
-            .first()
+        raise HTTPException(
+            status_code=400,
+            detail="Request ID is required.",
         )
+
+    try:
+        saved_attachments = [
+            dict(row)
+            for row in db.execute(
+                text("""
+                    DELETE FROM customer_hj."CUSTOMER_REQUEST_DOCUMENTS"
+                    WHERE "REQUEST_ID" = :request_id
+                    RETURNING "STORAGE_PATH" AS path
+                """),
+                {"request_id": request_id},
+            ).mappings().all()
+        ]
+
+        deleted = db.execute(
+            text("""
+                DELETE FROM customer_hj."CUSTOMER_REQUESTS"
+                WHERE id = :request_id
+                RETURNING id AS request_id
+            """),
+            {"request_id": request_id},
+        ).mappings().first()
+
         if deleted is None:
-            raise HTTPException(404, "Request not found.")
+            raise HTTPException(
+                status_code=404,
+                detail="Request not found.",
+            )
+
         db.commit()
+
     except HTTPException:
         db.rollback()
         raise
+
     except IntegrityError:
         db.rollback()
-        raise HTTPException(409, "Request has linked passengers, bookings, drafts, or timeline records.")
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Request has linked passengers, bookings, "
+                "drafts, or timeline records."
+            ),
+        )
+
     except SQLAlchemyError:
         db.rollback()
         logger.exception("Failed to delete customer request.")
-        raise HTTPException(500, "Unable to delete request.")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to delete request.",
+        )
+
     for attachment in saved_attachments:
-        if not isinstance(attachment, dict):
-            continue
-        stored_filename = Path(attachment.get("path") or "").name
+        stored_filename = Path(
+            attachment.get("path") or ""
+        ).name
+
         if (
-            not isinstance(stored_filename, str)
-            or len(stored_filename) != 32
-            or any(c not in "0123456789abcdef" for c in stored_filename)
+            len(stored_filename) != 32
+            or any(
+                character not in "0123456789abcdef"
+                for character in stored_filename
+            )
         ):
             continue
+
         try:
-            (UPLOAD_DIR / stored_filename).unlink(missing_ok=True)
+            (UPLOAD_DIR / stored_filename).unlink(
+                missing_ok=True
+            )
         except OSError:
-            logger.exception("Request deleted, but attachment cleanup failed.")
-    return {"message": "Request deleted successfully", "request_id": str(request_id)}
+            logger.exception(
+                "Request deleted, but attachment cleanup failed."
+            )
+
+    return {
+        "message": "Request deleted successfully",
+        "request_id": str(request_id),
+    }
