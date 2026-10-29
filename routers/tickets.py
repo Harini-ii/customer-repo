@@ -1,18 +1,23 @@
 import json
+import logging
 import textwrap
 from io import BytesIO
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from reportlab.pdfgen import canvas
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from database import get_db
 from rate_limiter import limiter
 
 router = APIRouter(prefix='/api/tickets', tags=['Tickets'])
+logger = logging.getLogger(__name__)
+
 TICKET_QUERY = '''
     SELECT t."ID" AS id, t."BOOKING_ID" AS booking_id,
            t."TICKET_NUMBER" AS ticket_number, t."TICKET_DATA" AS ticket_data,
@@ -25,19 +30,113 @@ TICKET_QUERY = '''
 '''
 
 
+class CreateTicketRequest(BaseModel):
+    booking_id: UUID | None = None
+    ticket_data: dict = Field(default_factory=dict)
+
+
 def find_ticket(db, ticket_id):
     if ticket_id is None:
         raise HTTPException(400, 'Please enter Ticket ID.')
-    row = db.execute(text(TICKET_QUERY + ' WHERE t."ID"=:ticket_id'),
-                     {'ticket_id': ticket_id}).mappings().first()
+    row = db.execute(
+        text(TICKET_QUERY + ' WHERE t."ID"=:ticket_id'),
+        {'ticket_id': ticket_id},
+    ).mappings().first()
     if row is None:
         raise HTTPException(404, 'Ticket not found.')
     return dict(row)
 
 
+@router.post('/', summary='Create Ticket', status_code=201)
+@limiter.limit('50/minute', per_method=True)
+def create_ticket(
+    request: Request,
+    data: CreateTicketRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    if data is None or data.booking_id is None:
+        raise HTTPException(400, 'Please enter Booking ID.')
+
+    try:
+        # Lock the booking so simultaneous calls to this endpoint cannot
+        # create two tickets for the same booking.
+        booking = db.execute(
+            text('''
+                SELECT "ID" AS id, "BOOKING_STATUS" AS booking_status
+                FROM customer_hj."CUSTOMER_BOOKING_RECORDS"
+                WHERE "ID"=:booking_id
+                FOR UPDATE
+            '''),
+            {'booking_id': data.booking_id},
+        ).mappings().first()
+        if booking is None:
+            raise HTTPException(404, 'Booking record not found.')
+        if str(booking['booking_status']).strip().lower() in ('cancelled', 'canceled'):
+            raise HTTPException(409, 'Cannot create a ticket for a cancelled booking.')
+
+        existing = db.execute(
+            text('''
+                SELECT "ID" AS id
+                FROM customer_hj."CUSTOMER_BOOKING_TICKETS"
+                WHERE "BOOKING_ID"=:booking_id
+                LIMIT 1
+            '''),
+            {'booking_id': data.booking_id},
+        ).mappings().first()
+        if existing is not None:
+            raise HTTPException(
+                409,
+                detail={
+                    'message': 'A ticket already exists for this booking.',
+                    'ticket_id': str(existing['id']),
+                },
+            )
+
+        # UUID-based numbering avoids duplicate numbers from COUNT(*) + 1.
+        ticket_number = 'HJ-TKT-' + uuid4().hex.upper()
+        inserted = db.execute(
+            text('''
+                INSERT INTO customer_hj."CUSTOMER_BOOKING_TICKETS" (
+                    "BOOKING_ID", "TICKET_NUMBER", "TICKET_DATA"
+                )
+                VALUES (
+                    :booking_id, :ticket_number, CAST(:ticket_data AS JSONB)
+                )
+                RETURNING "ID" AS id
+            '''),
+            {
+                'booking_id': data.booking_id,
+                'ticket_number': ticket_number,
+                'ticket_data': json.dumps(data.ticket_data),
+            },
+        ).mappings().one()
+        ticket = find_ticket(db, inserted['id'])
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        logger.exception('Ticket values conflict with database constraints.')
+        raise HTTPException(409, 'Ticket values conflict with database constraints.')
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception('Ticket creation failed.')
+        raise HTTPException(500, 'Unable to create ticket. Check the server terminal.')
+
+    return {
+        'message': 'Ticket created successfully',
+        'ticket_id': ticket['id'],
+        'ticket': ticket,
+    }
+
+
 @router.get('/', summary='Get All Tickets')
-def get_all_tickets(booking_id: UUID | None = None, request_id: UUID | None = None,
-                    db: Session = Depends(get_db)):
+def get_all_tickets(
+    booking_id: UUID | None = None,
+    request_id: UUID | None = None,
+    db: Session = Depends(get_db),
+):
     conditions = []
     parameters = {}
     if booking_id is not None:
@@ -49,7 +148,9 @@ def get_all_tickets(booking_id: UUID | None = None, request_id: UUID | None = No
     query = TICKET_QUERY
     if conditions:
         query += ' WHERE ' + ' AND '.join(conditions)
-    rows = db.execute(text(query + ' ORDER BY t."TICKET_NUMBER", t."ID"'), parameters).mappings().all()
+    rows = db.execute(
+        text(query + ' ORDER BY t."TICKET_NUMBER", t."ID"'), parameters,
+    ).mappings().all()
     return {'tickets': [dict(row) for row in rows], 'count': len(rows)}
 
 
@@ -60,8 +161,11 @@ def get_ticket(ticket_id: UUID | None = None, db: Session = Depends(get_db)):
 
 @router.get('/download', summary='Download Ticket')
 @limiter.limit('50/minute', per_method=True)
-def download_ticket(request: Request, ticket_id: UUID | None = None,
-                    db: Session = Depends(get_db)):
+def download_ticket(
+    request: Request,
+    ticket_id: UUID | None = None,
+    db: Session = Depends(get_db),
+):
     ticket = find_ticket(db, ticket_id)
     if str(ticket['booking_status']).strip().lower() in ('cancelled', 'canceled'):
         raise HTTPException(409, 'Ticket download is unavailable for a cancelled booking.')
@@ -82,18 +186,23 @@ def download_ticket(request: Request, ticket_id: UUID | None = None,
             pdf.drawString(55, y, line)
             y -= 16
 
-    for key in ('ticket_number', 'id', 'booking_id', 'request_id', 'pnr', 'booking_status',
-                'departure', 'destination', 'travel_date', 'aircraft_model', 'aircraft_kind'):
+    for key in (
+        'ticket_number', 'id', 'booking_id', 'request_id', 'pnr', 'booking_status',
+        'departure', 'destination', 'travel_date', 'aircraft_model', 'aircraft_kind',
+    ):
         write_line(f"{key.replace('_', ' ').title()}: {ticket.get(key) or '-'}")
     if ticket['ticket_data']:
         write_line('Ticket Data:')
-        data = ticket['ticket_data']
-        if isinstance(data, dict):
-            for key, value in data.items():
+        ticket_data = ticket['ticket_data']
+        if isinstance(ticket_data, dict):
+            for key, value in ticket_data.items():
                 write_line(f'{key}: {json.dumps(value, ensure_ascii=True, default=str)}')
         else:
-            write_line(json.dumps(data, ensure_ascii=True, default=str))
+            write_line(json.dumps(ticket_data, ensure_ascii=True, default=str))
     pdf.save()
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type='application/pdf', headers={
-        'Content-Disposition': f'attachment; filename=ticket-{ticket_id}.pdf'})
+    return StreamingResponse(
+        buffer,
+        media_type='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename=ticket-{ticket_id}.pdf'},
+    )

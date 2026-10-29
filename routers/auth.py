@@ -491,7 +491,6 @@ def forgot_password(
             )
             reset_token = secrets.token_urlsafe(32)
             token_hash = hash_reset_token(reset_token)
-            expires_at = datetime.now() + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
             connection.execute(
                 text("""
                     INSERT INTO customer_hj.customer_password_reset_tokens (
@@ -504,16 +503,16 @@ def forgot_password(
                     VALUES (
                         :customer_id,
                         :token_hash,
-                        :expires_at,
+                        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+                            + (:expiry_minutes * INTERVAL '1 minute'),
                         FALSE,
-                        :created_at
+                        CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
                     )
                 """),
                 {
                     "customer_id": customer_id,
                     "token_hash": token_hash,
-                    "expires_at": expires_at,
-                    "created_at": datetime.now(),
+                    "expiry_minutes": RESET_TOKEN_EXPIRE_MINUTES,
                 },
             )
     except HTTPException:
@@ -572,7 +571,7 @@ def reset_password(
                     FROM customer_hj.customer_password_reset_tokens
                     WHERE token_hash = :token_hash
                       AND used = FALSE
-                      AND expires_at > CURRENT_TIMESTAMP
+                      AND expires_at > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
                     FOR UPDATE
                 """),
                     {"token_hash": token_hash},

@@ -214,7 +214,14 @@ def upload_passenger_documents(
     request: Request,
     passenger_id: UUID | None = Form(None),
     request_id: UUID | None = Form(None),
-    documents: list[UploadFile] | None = File(None),
+    # A plain array of binary files lets Swagger show a multiple-file picker.
+    # The empty default keeps the field optional in the API schema; the
+    # endpoint returns a clear 400 response when no files are selected.
+    documents: list[UploadFile] = File(
+        default=[],
+        description='Select one or more document files using Choose Files.',
+        json_schema_extra={'items': {'type': 'string', 'format': 'binary'}},
+    ),
     document_type: DocumentType | None = Form(None),
     document_reference: str | None = Form(None),
     issuing_country: str | None = Form(None),
@@ -286,7 +293,13 @@ def get_document(document_id: UUID | None = None, db: Session = Depends(get_db))
 def update_document(
     request: Request,
     document_id: UUID | None = Form(None),
-    uploaded_document: UploadFile | None = File(None),
+    # Keep the OpenAPI schema binary rather than binary-or-null so Swagger
+    # shows a file picker. Omission still defaults to None for metadata edits.
+    uploaded_document: UploadFile = File(
+        default=None,
+        description='Choose a replacement file, or omit to update metadata only.',
+        json_schema_extra={'type': 'string', 'format': 'binary'},
+    ),
     document_type: DocumentType | None = Form(None),
     document_reference: str | None = Form(None),
     issuing_country: str | None = Form(None),
