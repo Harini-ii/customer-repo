@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -37,14 +37,14 @@ class PassengerType(str, Enum):
 
 class PassengerRequest(BaseModel):
     request_id: UUID | None = None
-    full_name: str | None = None
+    full_name: str | None = Field(default=None, validation_alias=AliasChoices('full_legal_name', 'full_name'))
     date_of_birth: str | None = None
     nationality: str | None = None
     passenger_type: PassengerType | None = None
     identity_document: str | None = None
-    foreign_national: bool | None = None
+    foreign_national: bool | None = Field(default=None, validation_alias=AliasChoices('is_foreign_national', 'foreign_national'))
     visa_required: bool | None = None
-    medical_fitness_documentation_required: bool | None = None
+    medical_fitness_documentation_required: bool | None = Field(default=None, validation_alias=AliasChoices('medical_fitness_required', 'medical_fitness_documentation_required'))
     emergency_contact_name: str | None = None
     emergency_contact_relationship: str | None = None
     emergency_contact_phone: str | None = None
@@ -77,8 +77,24 @@ def document(db, document_id, lock=False):
     return fetch(db, DOCUMENTS, 'id', document_id, 'Document', lock)
 
 
+def format_passenger(row):
+    result = dict(row)
+    result.update({
+        "id": str(result["passenger_id"]),
+        "full_legal_name": result.get("full_name"),
+        "is_foreign_national": result.get("foreign_national"),
+        "medical_fitness_required": result.get("medical_fitness_documentation_required"),
+    })
+    for legacy in ('passenger_id', 'full_name', 'foreign_national',
+                   'medical_fitness_documentation_required'):
+        result.pop(legacy, None)
+    return result
+
+
 def public_document(row):
-    return {key: value for key, value in dict(row).items() if key != 'storage_path'}
+    result = {key: value for key, value in dict(row).items() if key != 'storage_path'}
+    result["original_filename"] = result.pop("documents", None)
+    return result
 
 
 def update_row(db, table, key, record_id, values):
@@ -106,7 +122,7 @@ def add_passenger_details(request: Request, data: PassengerRequest | None = None
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, 'Passenger values conflict with database constraints.')
-    return {'message': 'Passenger details added successfully', 'passenger': row}
+    return {'message': 'Passenger details added successfully', 'passenger': format_passenger(row)}
 
 
 @router.get('/', summary='Get All Passenger Details')
@@ -115,12 +131,12 @@ def get_all_passengers(request_id: UUID | None = None, db: Session = Depends(get
     if request_id is not None:
         query += ' WHERE request_id=:request_id'
     rows = db.execute(text(query + ' ORDER BY created_at DESC, passenger_id'), {'request_id': request_id}).mappings()
-    return {'passengers': [dict(row) for row in rows]}
+    return {'passengers': [format_passenger(row) for row in rows]}
 
 
 @router.get('/by-id', summary='Get Passenger Details by ID')
 def get_passenger(passenger_id: UUID | None = None, db: Session = Depends(get_db)):
-    return {'passenger': passenger(db, passenger_id)}
+    return {'passenger': format_passenger(passenger(db, passenger_id))}
 
 
 @router.put('/by-id', summary='Update Passenger Details')
@@ -148,7 +164,7 @@ def update_passenger_details(request: Request, passenger_id: UUID | None = None,
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, 'Passenger values conflict with database constraints.')
-    return {'message': 'Passenger details updated successfully', 'passenger': row}
+    return {'message': 'Passenger details updated successfully', 'passenger': format_passenger(row)}
 
 
 @router.delete('/by-id', summary='Delete Passenger Details')

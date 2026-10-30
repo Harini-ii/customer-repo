@@ -4,7 +4,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -19,7 +19,8 @@ TRACKING = 'customer_hj."CUSTOMER_BOOKING_TRACKING"'
 RECORDS = 'customer_hj."CUSTOMER_BOOKING_RECORDS"'
 REQUESTS = 'customer_hj."CUSTOMER_REQUESTS"'
 RECORD_FIELDS = '''
-    "ID" AS booking_id,
+    "ID" AS id,
+    
     "REQUEST_ID" AS request_id,
     "PNR" AS pnr,
     "BOOKING_STATUS" AS booking_status,
@@ -41,11 +42,11 @@ class BookingRequest(BaseModel):
     aircraft_id: UUID | None = None
     service_type: str | None = None
     trip_type: TripType | None = None
-    origin: str | None = None
+    origin: str | None = Field(default=None, validation_alias=AliasChoices('departure', 'origin'))
     destination: str | None = None
-    departure_date: str | None = None
-    arrival_date: str | None = None
-    passenger_count: int | None = Field(default=None, gt=0)
+    departure_date: str | None = Field(default=None, validation_alias=AliasChoices('departure_date', 'start_date'))
+    arrival_date: str | None = Field(default=None, validation_alias=AliasChoices('return_date', 'end_date', 'arrival_date'))
+    passenger_count: int | None = Field(default=None, validation_alias=AliasChoices('passenger_count', 'people_count'), gt=0)
 
 
 class CancelBookingRequest(BaseModel):
@@ -87,7 +88,15 @@ def get_tracking(db, booking_id):
 
 def format_booking(db, booking):
     result = dict(booking)
+    result.update({
+        "id": str(result["booking_id"]),
+        "departure": result.get("origin"),
+        "return_date": result.get("arrival_date"),
+        "status": result.get("booking_status"),
+    })
     result['tracking'] = get_tracking(db, result['booking_id'])
+    for legacy in ('booking_id', 'origin', 'arrival_date', 'booking_status'):
+        result.pop(legacy, None)
     return result
 
 
@@ -192,8 +201,9 @@ def confirm_payment(request: Request, data: PaymentConfirmationRequest | None = 
 @router.get('/status', summary='Get Booking Draft Status')
 def get_booking_status(booking_id: UUID | None = None, db: Session = Depends(get_db)):
     booking = find_booking(db, booking_id)
-    return {key: booking[key] for key in ('booking_id', 'ticket_number', 'trip_type',
-            'booking_status', 'payment_status', 'payment_reference')}
+    return {'id': booking['booking_id'], 'status': booking['booking_status'],
+            **{key: booking[key] for key in ('ticket_number', 'trip_type',
+                'payment_status', 'payment_reference')}}
 
 
 @router.post('/cancel', summary='Cancel Booking Draft')
@@ -212,7 +222,7 @@ def cancel_booking(request: Request, data: CancelBookingRequest | None = None,
 @router.get('/location', summary='Get Booking Draft Location')
 def get_booking_location(booking_id: UUID | None = None, db: Session = Depends(get_db)):
     booking = find_booking(db, booking_id)
-    return {'booking_id': booking_id, 'booking_status': booking['booking_status'], 'tracking': get_tracking(db, booking_id)}
+    return {'id': booking_id, 'status': booking['booking_status'], 'tracking': get_tracking(db, booking_id)}
 
 
 @router.get('/history', summary='Get Booking Draft History')

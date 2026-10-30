@@ -1,7 +1,7 @@
 import logging
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -13,15 +13,15 @@ TICKET_COLUMNS = "ticket_id, ticket_number, customer_id, subject, message, statu
 
 
 class SupportTicketRequest(BaseModel):
-    ticket_id: UUID | None = None
+    ticket_id: UUID | None = Field(default=None, validation_alias=AliasChoices('id', 'ticket_id'))
     ticket_number: str | None = None
-    customer_id: UUID | None = None
+    customer_id: UUID | None = Field(default=None, validation_alias=AliasChoices('requester_id', 'customer_id'))
     subject: str | None = None
     message: str | None = None
 
 
 class UpdateSupportTicketRequest(BaseModel):
-    ticket_id: UUID
+    ticket_id: UUID = Field(default=..., validation_alias=AliasChoices('id', 'ticket_id'))
     ticket_number: str | None = None
     subject: str | None = None
     message: str | None = None
@@ -33,10 +33,16 @@ def format_ticket(ticket):
         return None
     result = dict(ticket)
     result["ticket_id"] = str(result["ticket_id"])
+    result["id"] = result["ticket_id"]
+    result["requester_id"] = str(result["customer_id"]) if result["customer_id"] is not None else None
+    result["requester_role"] = "CUSTOMER"
+    result["admin_response"] = result.get("admin_response")
     if result["customer_id"] is not None:
         result["customer_id"] = str(result["customer_id"])
     for field in ("created_at", "updated_at"):
         result[field] = result[field].isoformat() if result[field] else None
+    result.pop("ticket_id", None)
+    result.pop("customer_id", None)
     return result
 
 
@@ -53,8 +59,8 @@ def create_support_ticket(request: SupportTicketRequest, db: Session = Depends(g
         raise HTTPException(400, "Customer ID is required")
     try:
         customer = db.execute(
-            text("""SELECT customer_id FROM customer_hj."CUSTOMER_PROFILE"
-            WHERE customer_id = :customer_id"""),
+            text("""SELECT id AS customer_id FROM customer_hj."CUSTOMER_PROFILE"
+            WHERE id = :customer_id"""),
             {"customer_id": request.customer_id},
         ).first()
         if customer is None:

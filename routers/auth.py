@@ -3,10 +3,11 @@ import os
 import hashlib
 import hmac
 import secrets
+import traceback
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from jose import jwt, JWTError
 from sqlalchemy import text
 from database import engine
@@ -29,11 +30,11 @@ RESET_TOKEN_EXPIRE_MINUTES = 10
 
 
 class RegisterRequest(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, validation_alias=AliasChoices('fullName', 'full_name', 'name'))
     email: str | None = None
-    phone_number: str | None = None
+    phone_number: str | None = Field(default=None, validation_alias=AliasChoices('mobile', 'phone_number'))
     password: str | None = None
-    confirm_password: str | None = None
+    confirm_password: str | None = Field(default=None, validation_alias=AliasChoices('confirmPassword', 'confirm_password'))
 
 
 class LoginRequest(BaseModel):
@@ -47,8 +48,8 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     reset_token: str | None = None
-    new_password: str | None = None
-    confirm_password: str | None = None
+    new_password: str | None = Field(default=None, validation_alias=AliasChoices('new_password', 'password'))
+    confirm_password: str | None = Field(default=None, validation_alias=AliasChoices('confirmPassword', 'confirm_password'))
 
 
 class RefreshRequest(BaseModel):
@@ -127,12 +128,12 @@ def get_customer_by_id(customer_id: UUID):
             connection.execute(
                 text("""
                 SELECT
-                    customer_id,
-                    name,
+                    id AS customer_id,
+                    full_name AS name,
                     email,
-                    phone_number
+                    country, company, profile_url, mobile AS phone_number
                 FROM customer_hj."CUSTOMER_PROFILE"
-                WHERE customer_id = :customer_id
+                WHERE id = :customer_id
             """),
                 {"customer_id": customer_id},
             )
@@ -151,9 +152,12 @@ def format_customer(row, credits: int | None = None) -> dict:
             )
     return {
         "id": str(row["customer_id"]),
-        "name": row["name"],
+        "full_name": row["name"],
         "email": row["email"],
-        "phone_number": row["phone_number"],
+        "mobile": row["phone_number"],
+        "country": row.get("country"),
+        "company": row.get("company"),
+        "avatar_url": row.get("avatar_url") or row.get("profile_url"),
         "role": "customer",
         "credits": credits,
     }
@@ -272,7 +276,7 @@ def register(request: Request, user: RegisterRequest):
         with engine.begin() as connection:
             existing_email = connection.execute(
                 text("""
-                    SELECT customer_id
+                    SELECT id AS customer_id
                     FROM customer_hj."CUSTOMER_PROFILE"
                     WHERE LOWER(email) = :email
                 """),
@@ -285,9 +289,9 @@ def register(request: Request, user: RegisterRequest):
                 )
             existing_phone = connection.execute(
                 text("""
-                    SELECT customer_id
+                    SELECT id AS customer_id
                     FROM customer_hj."CUSTOMER_PROFILE"
-                    WHERE phone_number = :phone_number
+                    WHERE mobile = :phone_number
                 """),
                 {"phone_number": phone_number},
             ).first()
@@ -299,9 +303,9 @@ def register(request: Request, user: RegisterRequest):
             connection.execute(
                 text("""
                     INSERT INTO customer_hj."CUSTOMER_PROFILE" (
-                        name,
+                        full_name,
                         email,
-                        phone_number,
+                        mobile,
                         password,
                         created_at
                     )
@@ -324,6 +328,7 @@ def register(request: Request, user: RegisterRequest):
     except HTTPException:
         raise
     except Exception:
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail="Could not register customer",
@@ -353,10 +358,10 @@ def login(request: Request, user: LoginRequest):
                 connection.execute(
                     text("""
                     SELECT
-                        customer_id,
-                        name,
+                        id AS customer_id,
+                        full_name AS name,
                         email,
-                        phone_number,
+                        country, company, profile_url, mobile AS phone_number,
                         password
                     FROM customer_hj."CUSTOMER_PROFILE"
                     WHERE LOWER(email) = :email
@@ -380,7 +385,7 @@ def login(request: Request, user: LoginRequest):
                     text("""
                         UPDATE customer_hj."CUSTOMER_PROFILE"
                         SET password = :password
-                        WHERE customer_id = :customer_id
+                        WHERE id = :customer_id
                     """),
                     {
                         "password": hash_password(user.password),
@@ -395,6 +400,7 @@ def login(request: Request, user: LoginRequest):
     except HTTPException:
         raise
     except Exception:
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail="Could not log in",
@@ -468,7 +474,7 @@ def forgot_password(
         with engine.begin() as connection:
             row = connection.execute(
                 text("""
-                    SELECT customer_id
+                    SELECT id AS customer_id
                     FROM customer_hj."CUSTOMER_PROFILE"
                     WHERE LOWER(email) = :email
                 """),
@@ -518,6 +524,7 @@ def forgot_password(
     except HTTPException:
         raise
     except Exception:
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail="Could not generate password reset token",
@@ -589,7 +596,7 @@ def reset_password(
                 text("""
                     UPDATE customer_hj."CUSTOMER_PROFILE"
                     SET password = :password
-                    WHERE customer_id = :customer_id
+                    WHERE id = :customer_id
                 """),
                 {
                     "password": hash_password(data.new_password),
@@ -614,6 +621,7 @@ def reset_password(
     except HTTPException:
         raise
     except Exception:
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail="Could not reset password",

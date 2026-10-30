@@ -3,7 +3,7 @@ import re
 from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -28,11 +28,33 @@ class UseCreditsRequest(BaseModel):
 
 
 class PurchaseSubscriptionRequest(BaseModel):
-    plan_name: str | None = None
+    plan_name: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("plan_code", "plan_name"),
+    )
+
+    @field_validator("plan_name")
+    @classmethod
+    def resolve_plan_name(cls, value):
+        if value is None:
+            return None
+
+        value = value.strip()
+
+        names = {
+            "HORIZON": "The Horizon Club",
+            "RESERVE": "The Reserve Club",
+            "HOUSE": "The House Club",
+        }
+
+        return names.get(value.upper(), value)
 
 
 class PurchaseCreditsRequest(BaseModel):
-    credits: int | None = None
+    credits: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("credit_amount", "credits"),
+    )
 
 
 def require_customer_id(customer_id: UUID | None = None) -> UUID:
@@ -47,7 +69,7 @@ def get_customer(db: Session, customer_id: UUID, lock: bool = False):
         db.execute(
             text(
                 f"""SELECT *
-        FROM {SCHEMA}."CUSTOMER_PROFILE" WHERE customer_id = :customer_id {lock_clause}"""
+        FROM {SCHEMA}."CUSTOMER_PROFILE" WHERE id = :customer_id {lock_clause}"""
             ),
             {"customer_id": customer_id},
         )
@@ -78,12 +100,26 @@ def get_validity_days(value) -> int:
     return days
 
 
+def format_purchase(row):
+    """Expose the UI amount once; preserve original amounts for unknown currencies."""
+    result = dict(row)
+    currency = str(result.get("currency") or "").strip().upper()
+    amount = result.get("amount")
+    result["amount_usd"] = (
+        float(amount)
+        if currency == "USD" and amount is not None
+        else None
+    )
+    if currency == "USD":
+        result.pop("amount", None)
+    return result
+
+
 def transaction_to_dict(transaction):
     result = dict(transaction)
     result.update(
         {
             "id": str(transaction["transaction_id"]),
-            "transaction_id": str(transaction["transaction_id"]),
             "customer_id": str(transaction["customer_id"]),
             "type": transaction["transaction_type"],
             "reason": transaction["description"],
@@ -94,6 +130,8 @@ def transaction_to_dict(transaction):
             ),
         }
     )
+    for legacy in ('transaction_id', 'transaction_type', 'description'):
+        result.pop(legacy, None)
     return result
 
 
@@ -103,9 +141,7 @@ def subscription_plan_to_dict(plan):
         "name": plan["name"],
         "price": float(plan["price"]),
         "credits": plan["credit_amount"],
-        "validity_period": plan["validity_period"],
         "validity_days": get_validity_days(plan["validity_period"]),
-        "validity_unit": "days",
         "active": plan["active"],
     }
 
@@ -194,7 +230,6 @@ def fetch_subscriptions(db: Session, customer_id: UUID) -> list[dict]:
 def format_subscription(row: dict) -> dict:
     return {
         'id': str(row['customer_subscription_id']),
-        'customer_subscription_id': str(row['customer_subscription_id']),
         'customer_id': str(row['customer_id']),
         'plan_id': str(row['plan_id']) if row['plan_id'] is not None else None,
         'plan_name': row['plan_name'],
@@ -273,8 +308,9 @@ def purchase_history_query() -> str:
 @router.get('/', summary='Get Credit Balance')
 def get_credits(customer_id: UUID = Depends(require_customer_id), db: Session = Depends(get_db)):
     customer = get_customer(db, customer_id)
-    return {'customer': customer.get('name'), 'customer_id': str(customer_id),
-            **get_credit_totals(db, customer_id)}
+    totals = get_credit_totals(db, customer_id)
+    totals['credits_remaining'] = totals.pop('credit_balance')
+    return {'full_name': customer.get('full_name'), 'customer_id': str(customer_id), **totals}
 
 
 @router.get("/transactions", summary="Get Credit and Purchase History")
@@ -295,7 +331,6 @@ def get_credit_transactions(
     )
     transactions = [transaction_to_dict(row) for row in rows]
     return {
-        "credit_transactions": transactions,
         "transactions": transactions,
         "count": len(transactions),
     }
@@ -324,12 +359,11 @@ def use_credits(
         remaining_balance = balance - data.amount
         sync_entitlements(db, customer_id, remaining_balance)
         transaction_data = transaction_to_dict(transaction)
-        transaction_data["remaining_balance"] = remaining_balance
         db.commit()
         return {
             "message": "Credits used successfully",
             "transaction": transaction_data,
-            "remaining_balance": remaining_balance,
+            "credits_remaining": remaining_balance,
         }
     except HTTPException:
         db.rollback()
@@ -359,9 +393,9 @@ def get_subscription_plans(db: Session = Depends(get_db)):
 def get_current_subscription(customer_id: UUID = Depends(require_customer_id), db: Session = Depends(get_db)):
     get_customer(db, customer_id)
     current = next((s for s in fetch_subscriptions(db, customer_id) if s['is_current']), None)
-    return {'active': current is not None, 'booking_access': current is not None,
+    return {'booking_access': current is not None,
             'subscription': format_subscription(current) if current else None,
-            'credit_balance': get_credit_balance(db, customer_id)}
+            'credits_remaining': get_credit_balance(db, customer_id)}
 
 
 @router.post("/subscriptions/purchase", summary="Purchase Subscription")
@@ -432,28 +466,22 @@ def purchase_subscription(
                                    plan["credit_amount"], plan["price"])
         new_balance = get_credit_balance(db, customer_id)
         sync_entitlements(db, customer_id, new_balance)
-        plan_data = subscription_plan_to_dict(plan)
         subscription_data = {
-            **plan_data,
-            "customer_subscription_id": str(subscription["customer_subscription_id"]),
+            "id": str(subscription["customer_subscription_id"]),
             "plan_id": str(subscription["plan_id"]),
-            "plan": plan_data,
+            "plan_name": plan["name"],
             "start_date": subscription["start_date"],
             "end_date": subscription["end_date"],
             "status": subscription["status"],
             "price_paid": float(subscription["price_paid"]),
         }
-        transaction_id = str(transaction["transaction_id"])
         db.commit()
         return {
             "message": "Subscription purchased successfully",
             "payment_mode": "test",
             "subscription": subscription_data,
-            "credits_added": plan["credit_amount"],
-            "credit_balance": new_balance,
-            "transaction_id": transaction_id,
-            "purchase_id": str(purchase["id"]),
-            "purchase": purchase,
+            "credits_remaining": new_balance,
+            "purchase": format_purchase(purchase),
         }
     except HTTPException:
         db.rollback()
@@ -513,19 +541,12 @@ def purchase_credits(
                                    f"CREDITS_{data.credits}", data.credits, price)
         new_balance = get_credit_balance(db, customer_id)
         sync_entitlements(db, customer_id, new_balance)
-        transaction_data = transaction_to_dict(transaction)
         db.commit()
         return {
             "message": "Credit purchase recorded successfully",
             "payment_mode": "test",
-            "credits_purchased": data.credits,
-            "purchase_id": str(purchase["id"]),
-            "transaction_id": str(transaction["transaction_id"]),
-            "purchase": purchase,
-            "price_paid": float(price),
-            "currency": "USD",
-            "credit_balance": new_balance,
-            "transaction": transaction_data,
+            "purchase": format_purchase(purchase),
+            "credits_remaining": new_balance,
         }
     except HTTPException:
         db.rollback()
@@ -549,23 +570,14 @@ def get_entitlements(customer_id: UUID = Depends(require_customer_id), db: Sessi
         text(f'SELECT "UPDATED_AT" AS updated_at FROM {SCHEMA}."CUSTOMER_ENTITLEMENTS" '
              'WHERE "CUSTOMER_ID"=:customer_id'), {'customer_id': customer_id},
     ).mappings().first()
-    plan = None
-    if current is not None:
-        plan = {'plan_id': str(current['plan_id']), 'name': current['plan_name'],
-                'price': current['plan_price'], 'credit_amount': current['credits'],
-                'validity_period': current['validity_period'], 'active': current['plan_active']}
     return {
         'customer_id': str(customer_id),
         'subscription_status': 'active' if current else 'inactive',
-        'sub_plan': str(current['plan_id']) if current else None,
+        'subscription_plan': current['plan_name'] if current else None,
         'credits_remaining': totals['credit_balance'],
-        **totals,
         'updated_at': snapshot['updated_at'] if snapshot else None,
-        'active_subscription_count': len(active),
-        'subscription_count': len(subscriptions),
-        'subscriptions': [format_subscription(s) for s in subscriptions],
-        'plan': plan,
     }
+
 
 
 PURCHASE_COLUMNS = '''"ID" AS id, "CUSTOMER_ID" AS customer_id,
@@ -581,7 +593,7 @@ def get_purchases(customer_id: UUID = Depends(require_customer_id), db: Session 
         text('SELECT * FROM (' + purchase_history_query() + ') AS history '
              'ORDER BY created_at DESC, id DESC'), {'customer_id': customer_id},
     ).mappings().all()
-    return {'customer_id': str(customer_id), 'purchases': [dict(row) for row in rows], 'count': len(rows)}
+    return {'customer_id': str(customer_id), 'purchases': [format_purchase(row) for row in rows], 'count': len(rows)}
 
 
 @router.get('/purchases/by-id', summary='Get Purchase by ID')
@@ -596,7 +608,7 @@ def get_purchase(purchase_id: UUID | None = None,
     ).mappings().first()
     if row is None:
         raise HTTPException(404, 'Purchase not found for this customer.')
-    return {'purchase': dict(row)}
+    return {'purchase': format_purchase(row)}
 
 
 

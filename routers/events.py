@@ -11,7 +11,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from database import get_db
@@ -62,69 +62,69 @@ class IdentityDocumentType(str, Enum):
 
 
 class EventFields(BaseModel):
-    event_type: EventType | None = None
+    event_type: EventType | None = Field(default=None, validation_alias=AliasChoices('subtype', 'event_type'))
     timing: Timing | None = None
-    event_purpose: str | None = None
-    occasion_name: str | None = None
-    selected_experience: str | None = None
-    event_details: str | None = None
-    event_date: str | None = None
-    event_time: str | None = None
+    event_purpose: str | None = Field(default=None, validation_alias=AliasChoices('purpose', 'event_purpose'))
+    occasion_name: str | None = Field(default=None, validation_alias=AliasChoices('eventName', 'occasion_name'))
+    selected_experience: str | None = Field(default=None, validation_alias=AliasChoices('experienceName', 'selected_experience'))
+    event_details: str | None = Field(default=None, validation_alias=AliasChoices('customExperience', 'event_details'))
+    event_date: str | None = Field(default=None, validation_alias=AliasChoices('eventDate', 'event_date'))
+    event_time: str | None = Field(default=None, validation_alias=AliasChoices('eventStartTime', 'event_time'))
     date: str | None = None
     time: str | None = None
-    event_end_date: str | None = None
-    event_end_time: str | None = None
-    city_or_departure_area: str | None = None
+    event_end_date: str | None = Field(default=None, validation_alias=AliasChoices('eventEndDate', 'event_end_date'))
+    event_end_time: str | None = Field(default=None, validation_alias=AliasChoices('eventEndTime', 'event_end_time'))
+    city_or_departure_area: str | None = Field(default=None, validation_alias=AliasChoices('eventCity', 'city_or_departure_area'))
     venue: str | None = None
-    venue_address: str | None = None
-    estimated_budget: float | None = None
-    budget_currency: str | None = None
-    date_flexibility: str | None = None
-    event_notes: str | None = None
-    number_of_people: int | None = None
-    aircraft_type: AircraftType | None = None
-    aircraft_model: AircraftModel | None = None
-    aircraft_passengers: int | None = None
-    flight_type: str | None = None
-    departure_location: str | None = None
-    event_destination: str | None = None
-    preferred_flight_date: str | None = None
-    preferred_departure_time: str | None = None
-    ground_pickup: bool | None = None
-    vehicle_transfer: bool | None = None
-    vip_reception: bool | None = None
-    baggage_coordination: bool | None = None
-    accessibility_assistance: bool | None = None
-    special_aviation_requirements: str | None = None
+    venue_address: str | None = Field(default=None, validation_alias=AliasChoices('venueAddress', 'venue_address'))
+    estimated_budget: float | None = Field(default=None, validation_alias=AliasChoices('budget', 'estimated_budget'))
+    budget_currency: str | None = Field(default=None, validation_alias=AliasChoices('currency', 'budget_currency'))
+    date_flexibility: str | None = Field(default=None, validation_alias=AliasChoices('dateFlexibility', 'date_flexibility'))
+    event_notes: str | None = Field(default=None, validation_alias=AliasChoices('eventNotes', 'event_notes'))
+    number_of_people: int | None = Field(default=None, validation_alias=AliasChoices('totalAttendees', 'number_of_people'))
+    aircraft_type: AircraftType | None = Field(default=None, validation_alias=AliasChoices('aircraftKind', 'aircraft_type'))
+    aircraft_model: AircraftModel | None = Field(default=None, validation_alias=AliasChoices('preferredAircraft', 'aircraft_model'))
+    aircraft_passengers: int | None = Field(default=None, validation_alias=AliasChoices('passengerCount', 'aircraft_passengers'))
+    flight_type: str | None = Field(default=None, validation_alias=AliasChoices('tripType', 'flight_type'))
+    departure_location: str | None = Field(default=None, validation_alias=AliasChoices('departure', 'departure_location'))
+    event_destination: str | None = Field(default=None, validation_alias=AliasChoices('destination', 'event_destination'))
+    preferred_flight_date: str | None = Field(default=None, validation_alias=AliasChoices('departureDate', 'preferred_flight_date'))
+    preferred_departure_time: str | None = Field(default=None, validation_alias=AliasChoices('departureTime', 'preferred_departure_time'))
+    ground_pickup: bool | None = Field(default=None, validation_alias=AliasChoices('groundPickup', 'ground_pickup'))
+    vehicle_transfer: bool | None = Field(default=None, validation_alias=AliasChoices('vehicleTransfer', 'vehicle_transfer'))
+    vip_reception: bool | None = Field(default=None, validation_alias=AliasChoices('vipReception', 'vip_reception'))
+    baggage_coordination: bool | None = Field(default=None, validation_alias=AliasChoices('baggageCoordination', 'baggage_coordination'))
+    accessibility_assistance: bool | None = Field(default=None, validation_alias=AliasChoices('accessibilityAssistance', 'accessibility_assistance'))
+    special_aviation_requirements: str | None = Field(default=None, validation_alias=AliasChoices('aviationNotes', 'special_aviation_requirements'))
     food_preferences: str | None = None
     drinks: str | None = None
-    champagne_service: bool | None = None
+    champagne_service: bool | None = Field(default=None, validation_alias=AliasChoices('champagneRequested', 'champagne_service'))
     crew_preferences: str | None = None
-    catering_requested: bool | None = None
-    dietary_preferences: str | None = None
-    meal_preferences: str | None = None
-    catering_notes: str | None = None
-    beverage_service_requested: bool | None = None
-    beverage_preferences: str | None = None
-    decorations_requested: bool | None = None
-    occasion_theme: str | None = None
-    decoration_notes: str | None = None
-    photography_videography_requested: bool | None = None
-    photography_notes: str | None = None
-    vip_guest_arrangements: str | None = None
-    privacy_requirements: str | None = None
-    special_assistance: str | None = None
-    other_experience_requirements: str | None = None
-    full_name: str | None = None
-    email: str | None = None
-    mobile_number: str | None = None
+    catering_requested: bool | None = Field(default=None, validation_alias=AliasChoices('cateringRequired', 'catering_requested'))
+    dietary_preferences: str | None = Field(default=None, validation_alias=AliasChoices('dietaryPreferences', 'dietary_preferences'))
+    meal_preferences: str | None = Field(default=None, validation_alias=AliasChoices('mealPreferences', 'meal_preferences'))
+    catering_notes: str | None = Field(default=None, validation_alias=AliasChoices('cateringNotes', 'catering_notes'))
+    beverage_service_requested: bool | None = Field(default=None, validation_alias=AliasChoices('beverageRequired', 'beverage_service_requested'))
+    beverage_preferences: str | None = Field(default=None, validation_alias=AliasChoices('beveragePreferences', 'beverage_preferences'))
+    decorations_requested: bool | None = Field(default=None, validation_alias=AliasChoices('decorationRequired', 'decorations_requested'))
+    occasion_theme: str | None = Field(default=None, validation_alias=AliasChoices('decorationTheme', 'occasion_theme'))
+    decoration_notes: str | None = Field(default=None, validation_alias=AliasChoices('decorationNotes', 'decoration_notes'))
+    photography_videography_requested: bool | None = Field(default=None, validation_alias=AliasChoices('photographyRequired', 'photography_videography_requested'))
+    photography_notes: str | None = Field(default=None, validation_alias=AliasChoices('photographyNotes', 'photography_notes'))
+    vip_guest_arrangements: str | None = Field(default=None, validation_alias=AliasChoices('vipRequirements', 'vip_guest_arrangements'))
+    privacy_requirements: str | None = Field(default=None, validation_alias=AliasChoices('privacyRequirements', 'privacy_requirements'))
+    special_assistance: str | None = Field(default=None, validation_alias=AliasChoices('specialAssistance', 'special_assistance'))
+    other_experience_requirements: str | None = Field(default=None, validation_alias=AliasChoices('preferenceNotes', 'other_experience_requirements'))
+    full_name: str | None = Field(default=None, validation_alias=AliasChoices('contactName', 'full_name'))
+    email: str | None = Field(default=None, validation_alias=AliasChoices('contactEmail', 'email'))
+    mobile_number: str | None = Field(default=None, validation_alias=AliasChoices('contactMobile', 'mobile_number'))
     identity_document: str | None = None
     country: str | None = None
     company: str | None = None
-    event_coordinator: str | None = None
-    alternate_contact_number: str | None = None
-    preferred_contact_method: str | None = None
-    contact_notes: str | None = None
+    event_coordinator: str | None = Field(default=None, validation_alias=AliasChoices('coordinatorName', 'event_coordinator'))
+    alternate_contact_number: str | None = Field(default=None, validation_alias=AliasChoices('alternatePhone', 'alternate_contact_number'))
+    preferred_contact_method: str | None = Field(default=None, validation_alias=AliasChoices('preferredContactMethod', 'preferred_contact_method'))
+    contact_notes: str | None = Field(default=None, validation_alias=AliasChoices('contactNotes', 'contact_notes'))
     
 
 
@@ -133,7 +133,7 @@ class CreateEventRequest(EventFields):
 
 
 class UpdateEventRequest(EventFields):
-    event_id: UUID | None = None
+    event_id: UUID | None = Field(default=None, validation_alias=AliasChoices('id', 'event_id'))
 
 
 EVENT_COLUMNS = {field: field for field in EventFields.model_fields}
@@ -220,6 +220,62 @@ def fetch_event(db: Session, event_id: UUID):
         }
         for passenger in passenger_rows
     ]
+    # Translate database columns to the UI field names once.
+    event_data['subtype'] = event_data.pop('event_type', None)
+    event_data['purpose'] = event_data.pop('event_purpose', None)
+    event_data['eventName'] = event_data.pop('occasion_name', None)
+    event_data['experienceName'] = event_data.pop('selected_experience', None)
+    event_data['customExperience'] = event_data.pop('event_details', None)
+    event_data['eventDate'] = event_data.pop('date', None)
+    event_data['eventStartTime'] = event_data.pop('time', None)
+    event_data['eventEndDate'] = event_data.pop('event_end_date', None)
+    event_data['eventEndTime'] = event_data.pop('event_end_time', None)
+    event_data['eventCity'] = event_data.pop('city_or_departure_area', None)
+    event_data['venueAddress'] = event_data.pop('venue_address', None)
+    event_data['budget'] = event_data.pop('estimated_budget', None)
+    event_data['currency'] = event_data.pop('budget_currency', None)
+    event_data['dateFlexibility'] = event_data.pop('date_flexibility', None)
+    event_data['eventNotes'] = event_data.pop('event_notes', None)
+    event_data['totalAttendees'] = event_data.pop('number_of_people', None)
+    event_data['aircraftKind'] = event_data.pop('aircraft_type', None)
+    event_data['preferredAircraft'] = event_data.pop('aircraft_model', None)
+    event_data['passengerCount'] = event_data.pop('aircraft_passengers', None)
+    event_data['tripType'] = event_data.pop('flight_type', None)
+    event_data['departure'] = event_data.pop('departure_location', None)
+    event_data['destination'] = event_data.pop('event_destination', None)
+    event_data['departureDate'] = event_data.pop('preferred_flight_date', None)
+    event_data['departureTime'] = event_data.pop('preferred_departure_time', None)
+    event_data['groundPickup'] = event_data.pop('ground_pickup', None)
+    event_data['vehicleTransfer'] = event_data.pop('vehicle_transfer', None)
+    event_data['vipReception'] = event_data.pop('vip_reception', None)
+    event_data['baggageCoordination'] = event_data.pop('baggage_coordination', None)
+    event_data['accessibilityAssistance'] = event_data.pop('accessibility_assistance', None)
+    event_data['aviationNotes'] = event_data.pop('special_aviation_requirements', None)
+    event_data['cateringRequired'] = event_data.pop('catering_requested', None)
+    event_data['dietaryPreferences'] = event_data.pop('dietary_preferences', None)
+    event_data['mealPreferences'] = event_data.pop('meal_preferences', None)
+    event_data['cateringNotes'] = event_data.pop('catering_notes', None)
+    event_data['beverageRequired'] = event_data.pop('beverage_service_requested', None)
+    event_data['beveragePreferences'] = event_data.pop('beverage_preferences', None)
+    event_data['champagneRequested'] = event_data.pop('champagne_service', None)
+    event_data['decorationRequired'] = event_data.pop('decorations_requested', None)
+    event_data['decorationTheme'] = event_data.pop('occasion_theme', None)
+    event_data['decorationNotes'] = event_data.pop('decoration_notes', None)
+    event_data['photographyRequired'] = event_data.pop('photography_videography_requested', None)
+    event_data['photographyNotes'] = event_data.pop('photography_notes', None)
+    event_data['vipRequirements'] = event_data.pop('vip_guest_arrangements', None)
+    event_data['privacyRequirements'] = event_data.pop('privacy_requirements', None)
+    event_data['specialAssistance'] = event_data.pop('special_assistance', None)
+    event_data['preferenceNotes'] = event_data.pop('other_experience_requirements', None)
+    event_data['contactName'] = event_data.pop('full_name', None)
+    event_data['contactEmail'] = event_data.pop('email', None)
+    event_data['contactMobile'] = event_data.pop('mobile_number', None)
+    event_data['coordinatorName'] = event_data.pop('event_coordinator', None)
+    event_data['alternatePhone'] = event_data.pop('alternate_contact_number', None)
+    event_data['preferredContactMethod'] = event_data.pop('preferred_contact_method', None)
+    event_data['contactNotes'] = event_data.pop('contact_notes', None)
+    event_data.pop("title", None)
+    event_data.pop("description", None)
     return event_data
 
 
@@ -266,7 +322,7 @@ def create_event_record(data: dict, db: Session):
             customer = (
                 db.execute(
                     text("""
-                    SELECT customer_id
+                    SELECT id AS customer_id
                     FROM customer_hj."CUSTOMER_PROFILE"
                     WHERE LOWER(email) = LOWER(:email)
                     LIMIT 1
@@ -312,7 +368,6 @@ def create_event_record(data: dict, db: Session):
 def event_creation_response(event_id: UUID, db: Session):
     return {
         "message": "Event created successfully",
-        "event_id": event_id,
         "event": fetch_event(db, event_id),
         "next_step": (
             f"Add extra passengers using " f"POST /api/events/{event_id}/passengers"
@@ -385,8 +440,167 @@ def create_event(
     alternate_contact_number: str | None = Form(None),
     preferred_contact_method: str | None = Form(None),
     contact_notes: str | None = Form(None),
+    subtype: EventType | None = Form(None),
+    purpose: str | None = Form(None),
+    eventName: str | None = Form(None),
+    experienceName: str | None = Form(None),
+    customExperience: str | None = Form(None),
+    eventDate: str | None = Form(None),
+    eventStartTime: str | None = Form(None),
+    eventEndDate: str | None = Form(None),
+    eventEndTime: str | None = Form(None),
+    eventCity: str | None = Form(None),
+    venueAddress: str | None = Form(None),
+    budget: float | None = Form(None),
+    currency: str | None = Form(None),
+    dateFlexibility: str | None = Form(None),
+    eventNotes: str | None = Form(None),
+    totalAttendees: int | None = Form(None),
+    aircraftKind: AircraftType | None = Form(None),
+    preferredAircraft: AircraftModel | None = Form(None),
+    passengerCount: int | None = Form(None),
+    tripType: str | None = Form(None),
+    departure: str | None = Form(None),
+    destination: str | None = Form(None),
+    departureDate: str | None = Form(None),
+    departureTime: str | None = Form(None),
+    groundPickup: bool | None = Form(None),
+    vehicleTransfer: bool | None = Form(None),
+    vipReception: bool | None = Form(None),
+    baggageCoordination: bool | None = Form(None),
+    accessibilityAssistance: bool | None = Form(None),
+    aviationNotes: str | None = Form(None),
+    cateringRequired: bool | None = Form(None),
+    dietaryPreferences: str | None = Form(None),
+    mealPreferences: str | None = Form(None),
+    cateringNotes: str | None = Form(None),
+    beverageRequired: bool | None = Form(None),
+    beveragePreferences: str | None = Form(None),
+    champagneRequested: bool | None = Form(None),
+    decorationRequired: bool | None = Form(None),
+    decorationTheme: str | None = Form(None),
+    decorationNotes: str | None = Form(None),
+    photographyRequired: bool | None = Form(None),
+    photographyNotes: str | None = Form(None),
+    vipRequirements: str | None = Form(None),
+    privacyRequirements: str | None = Form(None),
+    specialAssistance: str | None = Form(None),
+    preferenceNotes: str | None = Form(None),
+    contactName: str | None = Form(None),
+    contactEmail: str | None = Form(None),
+    contactMobile: str | None = Form(None),
+    coordinatorName: str | None = Form(None),
+    alternatePhone: str | None = Form(None),
+    preferredContactMethod: str | None = Form(None),
+    contactNotes: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
+    if subtype is not None:
+        event_type = subtype
+    if purpose is not None:
+        event_purpose = purpose
+    if eventName is not None:
+        occasion_name = eventName
+    if experienceName is not None:
+        selected_experience = experienceName
+    if customExperience is not None:
+        event_details = customExperience
+    if eventDate is not None:
+        event_date = eventDate
+    if eventStartTime is not None:
+        event_time = eventStartTime
+    if eventEndDate is not None:
+        event_end_date = eventEndDate
+    if eventEndTime is not None:
+        event_end_time = eventEndTime
+    if eventCity is not None:
+        city_or_departure_area = eventCity
+    if venueAddress is not None:
+        venue_address = venueAddress
+    if budget is not None:
+        estimated_budget = budget
+    if currency is not None:
+        budget_currency = currency
+    if dateFlexibility is not None:
+        date_flexibility = dateFlexibility
+    if eventNotes is not None:
+        event_notes = eventNotes
+    if totalAttendees is not None:
+        number_of_people = totalAttendees
+    if aircraftKind is not None:
+        aircraft_type = aircraftKind
+    if preferredAircraft is not None:
+        aircraft_model = preferredAircraft
+    if passengerCount is not None:
+        aircraft_passengers = passengerCount
+    if tripType is not None:
+        flight_type = tripType
+    if departure is not None:
+        departure_location = departure
+    if destination is not None:
+        event_destination = destination
+    if departureDate is not None:
+        preferred_flight_date = departureDate
+    if departureTime is not None:
+        preferred_departure_time = departureTime
+    if groundPickup is not None:
+        ground_pickup = groundPickup
+    if vehicleTransfer is not None:
+        vehicle_transfer = vehicleTransfer
+    if vipReception is not None:
+        vip_reception = vipReception
+    if baggageCoordination is not None:
+        baggage_coordination = baggageCoordination
+    if accessibilityAssistance is not None:
+        accessibility_assistance = accessibilityAssistance
+    if aviationNotes is not None:
+        special_aviation_requirements = aviationNotes
+    if cateringRequired is not None:
+        catering_requested = cateringRequired
+    if dietaryPreferences is not None:
+        dietary_preferences = dietaryPreferences
+    if mealPreferences is not None:
+        meal_preferences = mealPreferences
+    if cateringNotes is not None:
+        catering_notes = cateringNotes
+    if beverageRequired is not None:
+        beverage_service_requested = beverageRequired
+    if beveragePreferences is not None:
+        beverage_preferences = beveragePreferences
+    if champagneRequested is not None:
+        champagne_service = champagneRequested
+    if decorationRequired is not None:
+        decorations_requested = decorationRequired
+    if decorationTheme is not None:
+        occasion_theme = decorationTheme
+    if decorationNotes is not None:
+        decoration_notes = decorationNotes
+    if photographyRequired is not None:
+        photography_videography_requested = photographyRequired
+    if photographyNotes is not None:
+        photography_notes = photographyNotes
+    if vipRequirements is not None:
+        vip_guest_arrangements = vipRequirements
+    if privacyRequirements is not None:
+        privacy_requirements = privacyRequirements
+    if specialAssistance is not None:
+        special_assistance = specialAssistance
+    if preferenceNotes is not None:
+        other_experience_requirements = preferenceNotes
+    if contactName is not None:
+        full_name = contactName
+    if contactEmail is not None:
+        email = contactEmail
+    if contactMobile is not None:
+        mobile_number = contactMobile
+    if coordinatorName is not None:
+        event_coordinator = coordinatorName
+    if alternatePhone is not None:
+        alternate_contact_number = alternatePhone
+    if preferredContactMethod is not None:
+        preferred_contact_method = preferredContactMethod
+    if contactNotes is not None:
+        contact_notes = contactNotes
     data = {
         "event_type": event_type,
         "timing": timing,

@@ -103,9 +103,12 @@ def get_preferences(db: Session, customer_id: UUID):
 def format_customer(db: Session, customer):
     return {
         "id": str(customer["customer_id"]),
-        "name": customer["name"],
+        "full_name": customer["name"],
         "email": customer["email"],
-        "phone_number": customer["phone_number"],
+        "mobile": customer["phone_number"],
+        "country": customer.get("country"),
+        "company": customer.get("company"),
+        "avatar_url": customer.get("avatar_url") or customer.get("profile_url"),
         "role": "customer",
         "credits": None,
         "preferences": get_preferences(
@@ -131,12 +134,12 @@ def get_all_customers(
         db.execute(
             text("""
                 SELECT
-                    customer_id,
-                    name,
+                    id AS customer_id,
+                    full_name AS name,
                     email,
-                    phone_number
+                    country, company, profile_url, mobile AS phone_number
                 FROM customer_hj."CUSTOMER_PROFILE"
-                ORDER BY customer_id
+                ORDER BY id
             """)
         )
         .mappings()
@@ -169,12 +172,12 @@ def get_customer(
         db.execute(
             text("""
                 SELECT
-                    customer_id,
-                    name,
+                    id AS customer_id,
+                    full_name AS name,
                     email,
-                    phone_number
+                    country, company, profile_url, mobile AS phone_number
                 FROM customer_hj."CUSTOMER_PROFILE"
-                WHERE customer_id = :customer_id
+                WHERE id = :customer_id
             """),
             {"customer_id": customer_id},
         )
@@ -217,9 +220,9 @@ def update_customer_preferences(
     # Check whether the customer exists.
     customer = db.execute(
         text("""
-            SELECT customer_id
+            SELECT id AS customer_id
             FROM customer_hj."CUSTOMER_PROFILE"
-            WHERE customer_id = :customer_id
+            WHERE id = :customer_id
         """),
         {"customer_id": customer_id},
     ).first()
@@ -394,9 +397,9 @@ def get_customer_preferences(
     # Check whether the customer exists.
     customer = db.execute(
         text("""
-            SELECT customer_id
+            SELECT id AS customer_id
             FROM customer_hj."CUSTOMER_PROFILE"
-            WHERE customer_id = :customer_id
+            WHERE id = :customer_id
         """),
         {"customer_id": customer_id},
     ).first()

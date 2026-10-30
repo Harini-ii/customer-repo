@@ -15,7 +15,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -37,7 +37,16 @@ UPLOAD_DIR = (
 )
 
 
-class RequestCategory(str, Enum):
+class CaseInsensitiveEnum(str, Enum):
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            return next((item for item in cls
+                         if item.value.casefold() == value.strip().casefold()), None)
+        return None
+
+
+class RequestCategory(CaseInsensitiveEnum):
     aviation = "Aviation"
     mobility = "Mobility"
     yachts = "Yachts"
@@ -46,12 +55,12 @@ class RequestCategory(str, Enum):
     experiences = "Experiences"
 
 
-class AircraftType(str, Enum):
+class AircraftType(CaseInsensitiveEnum):
     flight = "Flight"
     helicopter = "Helicopter"
 
 
-class Currency(str, Enum):
+class Currency(CaseInsensitiveEnum):
     inr = "INR"
     usd = "USD"
     eur = "EUR"
@@ -99,6 +108,50 @@ REQUEST_COLUMNS = """
 """
 
 
+FIELD_ALIASES = {
+    "customerId": "customer_id", "serviceType": "service_type",
+    "serviceSubtype": "service_sub_type", "service_subtype": "service_sub_type",
+    "peopleCount": "people_count", "startDate": "start_date",
+    "endDate": "end_date", "tripType": "trip_type",
+    "additionalRequirements": "additional_requirements",
+    "customerDetails": "customer_details", "serviceDetails": "service_details",
+    "aircraftType": "aircraft_type", "aircraftModel": "aircraft_model",
+}
+
+
+def normalize_request_fields(value):
+    if not isinstance(value, dict):
+        return value
+    result = dict(value)
+    for alias, canonical in FIELD_ALIASES.items():
+        if alias in result:
+            if canonical in result and result[canonical] != result[alias]:
+                raise ValueError(f"Conflicting values for {canonical} and {alias}.")
+            result[canonical] = result.pop(alias)
+    for key in ("start_date", "end_date"):
+        if result.get(key) == "":
+            result[key] = None
+    details = result.get("customer_details")
+    if isinstance(details, dict):
+        for target, sources in {
+            "customer_name": ("name", "full_name"),
+            "customer_email": ("email",),
+            "customer_mobile": ("mobile", "phone"),
+            "country": ("country",),
+        }.items():
+            if target not in result:
+                for source in sources:
+                    if source in details:
+                        result[target] = details[source]
+                        break
+    details = result.get("service_details")
+    if isinstance(details, dict):
+        for key in ("aircraft_type", "aircraft_model"):
+            if key not in result and key in details:
+                result[key] = details[key]
+    return result
+
+
 def parse_json(value, field_name):
     if value is None or not value.strip():
         return None
@@ -127,9 +180,9 @@ def with_attachments(db, row):
         text("""
             SELECT
                 "ID" AS id,
-                "ORIGINAL_FILE_NAME" AS filename,
-                "MIME_TYPE" AS content_type,
-                "STORAGE_PATH" AS path,
+                "ORIGINAL_FILE_NAME" AS original_filename,
+                "MIME_TYPE" AS mime_type,
+                "STORAGE_PATH" AS storage_path,
                 "FILE_SIZE" AS file_size,
                 "DOCUMENT_TYPE" AS document_type
             FROM customer_hj."CUSTOMER_REQUEST_DOCUMENTS"
@@ -139,10 +192,18 @@ def with_attachments(db, row):
         {"request_id": result["request_id"]},
     ).mappings().all()
 
-    result["attachments"] = [
-        dict(document) for document in documents
-    ]
-
+    result["service_subtype"] = result.pop("service_sub_type", None)
+    result.pop("request_id", None)
+    result["request_documents"] = [dict(document) for document in documents]
+    details = result.get("customer_details")
+    if details is None or isinstance(details, dict):
+        details = dict(details or {})
+        for field, legacy in (("name", "customer_name"), ("email", "customer_email"),
+                              ("mobile", "customer_mobile"), ("country", "country")):
+            value = result.pop(legacy, None)
+            if details.get(field) is None:
+                details[field] = value
+        result["customer_details"] = details
     return result
 
 
@@ -193,8 +254,69 @@ def create_request(
             }
         },
     ),
+    service_subtype: str | None = Form(None),
+    customerId: UUID | None = Form(None),
+    serviceType: RequestCategory | None = Form(None),
+    serviceSubtype: str | None = Form(None),
+    peopleCount: int | None = Form(None),
+    startDate: date | None = Form(None),
+    endDate: date | None = Form(None),
+    tripType: str | None = Form(None),
+    additionalRequirements: str | None = Form(None),
+    customerDetails: str | None = Form(None),
+    serviceDetails: str | None = Form(None),
+    aircraftType: AircraftType | None = Form(None),
+    aircraftModel: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
+    if customerId is not None:
+        customer_id = customerId
+    if serviceType is not None:
+        service_type = serviceType
+    if serviceSubtype is not None:
+        service_sub_type = serviceSubtype
+    if peopleCount is not None:
+        people_count = peopleCount
+    if startDate is not None:
+        start_date = startDate
+    if endDate is not None:
+        end_date = endDate
+    if tripType is not None:
+        trip_type = tripType
+    if additionalRequirements is not None:
+        additional_requirements = additionalRequirements
+    if customerDetails is not None:
+        customer_details = customerDetails
+    if serviceDetails is not None:
+        service_details = serviceDetails
+    if aircraftType is not None:
+        aircraft_type = aircraftType
+    if aircraftModel is not None:
+        aircraft_model = aircraftModel
+    if service_subtype is not None:
+        if service_sub_type is not None and service_sub_type != service_subtype:
+            raise HTTPException(400, "Conflicting service subtype values.")
+        service_sub_type = service_subtype
+    customer_details = parse_json(customer_details, "customer_details")
+    service_details = parse_json(service_details, "service_details")
+    nested = normalize_request_fields({
+        "customer_details": customer_details, "service_details": service_details,
+    })
+    customer_name = customer_name if customer_name is not None else nested.get("customer_name")
+    customer_email = customer_email if customer_email is not None else nested.get("customer_email")
+    customer_mobile = customer_mobile if customer_mobile is not None else nested.get("customer_mobile")
+    country = country if country is not None else nested.get("country")
+    for value in (customer_name, customer_email, customer_mobile, country):
+        if value is not None and not isinstance(value, str):
+            raise HTTPException(400, "Customer contact fields must be strings.")
+    if aircraft_type is None and nested.get("aircraft_type") is not None:
+        try:
+            aircraft_type = AircraftType(nested["aircraft_type"])
+        except ValueError:
+            raise HTTPException(400, "Aircraft type must be Flight or Helicopter.")
+    aircraft_model = aircraft_model if aircraft_model is not None else nested.get("aircraft_model")
+    if aircraft_model is not None and not isinstance(aircraft_model, str):
+        raise HTTPException(400, "Aircraft model must be a string.")
     uploaded_attachments = []
 
     for attachment in attachments or []:
@@ -278,15 +400,6 @@ def create_request(
         subject.strip()
         if subject and subject.strip()
         else f"{service_type.value} request"
-    )
-
-    customer_details = parse_json(
-        customer_details,
-        "customer_details",
-    )
-    service_details = parse_json(
-        service_details,
-        "service_details",
     )
 
     saved_files = []
@@ -580,6 +693,11 @@ def get_request(
 
 
 class UpdateRequestDetails(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def accept_frontend_fields(cls, value):
+        return normalize_request_fields(value)
+
     request_type: str | None = None
     subject: str | None = None
     message: str | None = None

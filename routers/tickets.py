@@ -35,6 +35,16 @@ class CreateTicketRequest(BaseModel):
     ticket_data: dict = Field(default_factory=dict)
 
 
+def format_ticket(row):
+    result = dict(row)
+    metadata = result.get("ticket_data")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for field in ("passenger_id", "passenger_name", "sector", "generated_at"):
+        if field not in result:
+            result[field] = metadata.get(field)
+    return result
+
+
 def find_ticket(db, ticket_id):
     if ticket_id is None:
         raise HTTPException(400, 'Please enter Ticket ID.')
@@ -44,7 +54,7 @@ def find_ticket(db, ticket_id):
     ).mappings().first()
     if row is None:
         raise HTTPException(404, 'Ticket not found.')
-    return dict(row)
+    return format_ticket(row)
 
 
 @router.post('/', summary='Create Ticket', status_code=201)
@@ -126,7 +136,6 @@ def create_ticket(
 
     return {
         'message': 'Ticket created successfully',
-        'ticket_id': ticket['id'],
         'ticket': ticket,
     }
 
@@ -151,7 +160,7 @@ def get_all_tickets(
     rows = db.execute(
         text(query + ' ORDER BY t."TICKET_NUMBER", t."ID"'), parameters,
     ).mappings().all()
-    return {'tickets': [dict(row) for row in rows], 'count': len(rows)}
+    return {'tickets': [format_ticket(row) for row in rows], 'count': len(rows)}
 
 
 @router.get('/by-id', summary='Get Ticket by ID')
