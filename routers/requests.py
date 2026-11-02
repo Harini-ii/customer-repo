@@ -14,8 +14,9 @@ from fastapi import (
     Form,
     HTTPException,
     UploadFile,
+    Request,
 )
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -108,48 +109,50 @@ REQUEST_COLUMNS = """
 """
 
 
-FIELD_ALIASES = {
-    "customerId": "customer_id", "serviceType": "service_type",
-    "serviceSubtype": "service_sub_type", "service_subtype": "service_sub_type",
-    "peopleCount": "people_count", "startDate": "start_date",
-    "endDate": "end_date", "tripType": "trip_type",
-    "additionalRequirements": "additional_requirements",
-    "customerDetails": "customer_details", "serviceDetails": "service_details",
-    "aircraftType": "aircraft_type", "aircraftModel": "aircraft_model",
+FORM_FIELDS = {
+    "customer_id", "service_type", "service_subtype", "aircraft_type",
+    "aircraft_model", "people_count", "budget", "currency", "departure",
+    "destination", "start_date", "end_date", "trip_type",
+    "additional_requirements", "customer_details", "service_details",
+    "request_type", "subject", "message", "request_mode", "booking_drafts",
+    "attachments",
 }
+
+
+async def validate_form_fields(request: Request):
+    submitted = await request.form()
+    unknown = set(submitted.keys()) - FORM_FIELDS
+    if unknown:
+        raise HTTPException(
+            400,
+            "Unsupported form fields: " + ", ".join(sorted(unknown))
+            + ". Refresh Swagger and use only the displayed fields.",
+        )
 
 
 def normalize_request_fields(value):
     if not isinstance(value, dict):
         return value
     result = dict(value)
-    for alias, canonical in FIELD_ALIASES.items():
-        if alias in result:
-            if canonical in result and result[canonical] != result[alias]:
-                raise ValueError(f"Conflicting values for {canonical} and {alias}.")
-            result[canonical] = result.pop(alias)
-    for key in ("start_date", "end_date"):
-        if result.get(key) == "":
-            result[key] = None
     details = result.get("customer_details")
     if isinstance(details, dict):
-        for target, sources in {
-            "customer_name": ("name", "full_name"),
-            "customer_email": ("email",),
-            "customer_mobile": ("mobile", "phone"),
-            "country": ("country",),
+        for target, source in {
+            "customer_name": "name",
+            "customer_email": "email",
+            "customer_mobile": "mobile",
+            "country": "country",
         }.items():
-            if target not in result:
-                for source in sources:
-                    if source in details:
-                        result[target] = details[source]
-                        break
-    details = result.get("service_details")
-    if isinstance(details, dict):
-        for key in ("aircraft_type", "aircraft_model"):
-            if key not in result and key in details:
-                result[key] = details[key]
+            if source in details:
+                result[target] = details[source]
     return result
+
+
+def cleanup_files(paths):
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Failed to remove request attachment.")
 
 
 def parse_json(value, field_name):
@@ -211,12 +214,12 @@ def with_attachments(db, row):
     "/",
     summary="Create New Request",
     status_code=200,
+    dependencies=[Depends(validate_form_fields)],
 )
 def create_request(
     customer_id: UUID | None = Form(None),
-    service_type: RequestCategory = Form(
-        RequestCategory.aviation
-    ),
+    service_type: RequestCategory = Form(RequestCategory.aviation),
+    service_subtype: str | None = Form(None),
     aircraft_type: AircraftType | None = Form(None),
     aircraft_model: str | None = Form(None),
     people_count: int | None = Form(None, gt=0),
@@ -225,98 +228,42 @@ def create_request(
     departure: str | None = Form(None),
     destination: str | None = Form(None),
     start_date: date | None = Form(None),
-    customer_name: str | None = Form(None),
-    customer_email: str | None = Form(None),
-    customer_mobile: str | None = Form(None),
-    country: str | None = Form(None),
-    request_type: str = Form("Charter"),
-    subject: str | None = Form(None),
-    message: str | None = Form(None),
-    service_sub_type: str | None = Form(None),
     end_date: date | None = Form(None),
     trip_type: str | None = Form(None),
     additional_requirements: str | None = Form(None),
-    customer_details: str | None = Form(None),
-    service_details: str | None = Form(None),
-    identity_document: str | None = Form(None),
-    mode: str | None = Form(None),
-    access: str | None = Form(None),
-    department: str | None = Form(None),
+    customer_details: str | None = Form(
+        None,
+        description='JSON object with name, email, mobile and country.',
+    ),
+    service_details: str | None = Form(
+        None, description="Optional JSON object containing extra service details.",
+    ),
+    request_type: str = Form("Charter"),
+    subject: str | None = Form(None),
+    message: str | None = Form(None),
     request_mode: str | None = Form(None),
     booking_drafts: bool = Form(False),
-    attachments: list[UploadFile | str] = File(
+    attachments: list[UploadFile] = File(
         default=None,
-        description="Select one or more documents or images.",
-        json_schema_extra={
-            "items": {
-                "type": "string",
-                "format": "binary",
-            }
-        },
+        json_schema_extra={"items": {"type": "string", "format": "binary"}},
     ),
-    service_subtype: str | None = Form(None),
-    customerId: UUID | None = Form(None),
-    serviceType: RequestCategory | None = Form(None),
-    serviceSubtype: str | None = Form(None),
-    peopleCount: int | None = Form(None),
-    startDate: date | None = Form(None),
-    endDate: date | None = Form(None),
-    tripType: str | None = Form(None),
-    additionalRequirements: str | None = Form(None),
-    customerDetails: str | None = Form(None),
-    serviceDetails: str | None = Form(None),
-    aircraftType: AircraftType | None = Form(None),
-    aircraftModel: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    if customerId is not None:
-        customer_id = customerId
-    if serviceType is not None:
-        service_type = serviceType
-    if serviceSubtype is not None:
-        service_sub_type = serviceSubtype
-    if peopleCount is not None:
-        people_count = peopleCount
-    if startDate is not None:
-        start_date = startDate
-    if endDate is not None:
-        end_date = endDate
-    if tripType is not None:
-        trip_type = tripType
-    if additionalRequirements is not None:
-        additional_requirements = additionalRequirements
-    if customerDetails is not None:
-        customer_details = customerDetails
-    if serviceDetails is not None:
-        service_details = serviceDetails
-    if aircraftType is not None:
-        aircraft_type = aircraftType
-    if aircraftModel is not None:
-        aircraft_model = aircraftModel
-    if service_subtype is not None:
-        if service_sub_type is not None and service_sub_type != service_subtype:
-            raise HTTPException(400, "Conflicting service subtype values.")
-        service_sub_type = service_subtype
     customer_details = parse_json(customer_details, "customer_details")
     service_details = parse_json(service_details, "service_details")
-    nested = normalize_request_fields({
-        "customer_details": customer_details, "service_details": service_details,
-    })
-    customer_name = customer_name if customer_name is not None else nested.get("customer_name")
-    customer_email = customer_email if customer_email is not None else nested.get("customer_email")
-    customer_mobile = customer_mobile if customer_mobile is not None else nested.get("customer_mobile")
-    country = country if country is not None else nested.get("country")
+    if customer_details is not None and not isinstance(customer_details, dict):
+        raise HTTPException(400, "customer_details must be a JSON object.")
+    nested = normalize_request_fields({"customer_details": customer_details})
+    customer_name = nested.get("customer_name")
+    customer_email = nested.get("customer_email")
+    customer_mobile = nested.get("customer_mobile")
+    country = nested.get("country")
     for value in (customer_name, customer_email, customer_mobile, country):
         if value is not None and not isinstance(value, str):
             raise HTTPException(400, "Customer contact fields must be strings.")
-    if aircraft_type is None and nested.get("aircraft_type") is not None:
-        try:
-            aircraft_type = AircraftType(nested["aircraft_type"])
-        except ValueError:
-            raise HTTPException(400, "Aircraft type must be Flight or Helicopter.")
-    aircraft_model = aircraft_model if aircraft_model is not None else nested.get("aircraft_model")
-    if aircraft_model is not None and not isinstance(aircraft_model, str):
-        raise HTTPException(400, "Aircraft model must be a string.")
+    service_sub_type = service_subtype
+    # Retain database compatibility without exposing administrative inputs.
+    identity_document = mode = access = department = None
     uploaded_attachments = []
 
     for attachment in attachments or []:
@@ -477,6 +424,13 @@ def create_request(
     """)
 
     try:
+        customer_exists = db.execute(
+            text('SELECT id FROM customer_hj."CUSTOMER_PROFILE" '
+                 'WHERE id = :customer_id FOR KEY SHARE'),
+            {"customer_id": customer_id},
+        ).first()
+        if customer_exists is None:
+            raise HTTPException(404, "Customer not found. Use the ID returned by login.")
         for uploaded_file in uploaded_attachments:
             if not uploaded_file.filename:
                 continue
@@ -605,6 +559,17 @@ def create_request(
         )
         db.commit()
 
+    except HTTPException:
+        db.rollback()
+        cleanup_files(saved_paths)
+        raise
+
+    except IntegrityError:
+        db.rollback()
+        cleanup_files(saved_paths)
+        logger.exception("Request conflicts with database constraints.")
+        raise HTTPException(409, "Request conflicts with a linked record or database constraint.")
+
     except (SQLAlchemyError, OSError):
         db.rollback()
 
@@ -693,10 +658,7 @@ def get_request(
 
 
 class UpdateRequestDetails(BaseModel):
-    @model_validator(mode="before")
-    @classmethod
-    def accept_frontend_fields(cls, value):
-        return normalize_request_fields(value)
+    model_config = ConfigDict(extra="forbid")
 
     request_type: str | None = None
     subject: str | None = None
@@ -710,21 +672,13 @@ class UpdateRequestDetails(BaseModel):
     departure: str | None = None
     destination: str | None = None
     start_date: date | None = None
-    customer_name: str | None = None
-    customer_email: str | None = None
-    customer_mobile: str | None = None
-    country: str | None = None
     status: str | None = None
-    service_sub_type: str | None = None
+    service_subtype: str | None = None
     end_date: date | None = None
     trip_type: str | None = None
     additional_requirements: str | None = None
-    customer_details: dict | list | None = None
+    customer_details: dict | None = None
     service_details: dict | list | None = None
-    identity_document: str | None = None
-    mode: str | None = None
-    access: str | None = None
-    department: str | None = None
     request_mode: str | None = None
     booking_drafts: bool | None = None
 
@@ -762,6 +716,12 @@ def update_request(
         key: value.value if isinstance(value, Enum) else value
         for key, value in updates.items()
     }
+    if "service_subtype" in updates:
+        updates["service_sub_type"] = updates.pop("service_subtype")
+    updates = normalize_request_fields(updates)
+    for field in ("customer_name", "customer_email", "customer_mobile", "country"):
+        if field in updates and not isinstance(updates[field], str):
+            raise HTTPException(400, f"{field} must be a string.")
 
     for field in (
         "request_type",
