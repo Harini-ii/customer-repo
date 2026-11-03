@@ -22,19 +22,70 @@ router = APIRouter(
 )
 
 
-class EventType(str, Enum):
-    special_event = "Special event"
-    emergency = "Emergency"
+class UIEventEnum(str, Enum):
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            key = value.strip().casefold()
+            for member in cls:
+                if key in {member.value.casefold(), member.database_value.casefold()}:
+                    return member
+        return None
+
+    @property
+    def database_value(self):
+        return EVENT_DATABASE_VALUES[type(self)][self.value]
 
 
-class Timing(str, Enum):
-    immediate = "Immediate"
-    scheduled = "Scheduled"
+class EventType(UIEventEnum):
+    special_event = "SPECIAL"
+    emergency = "EMERGENCY"
 
 
-class AircraftType(str, Enum):
-    flight = "Flight"
-    helicopter = "Helicopter"
+class Timing(UIEventEnum):
+    immediate = "IMMEDIATE"
+    scheduled = "SCHEDULED"
+
+
+class AircraftType(UIEventEnum):
+    flight = "flight"
+    helicopter = "helicopter"
+
+
+EVENT_DATABASE_VALUES = {
+    EventType: {"SPECIAL": "Special event", "EMERGENCY": "Emergency"},
+    Timing: {"IMMEDIATE": "Immediate", "SCHEDULED": "Scheduled"},
+    AircraftType: {"flight": "Flight", "helicopter": "Helicopter"},
+}
+EVENT_ENUM_FIELDS = {
+    "event_type": EventType,
+    "timing": Timing,
+    "aircraft_type": AircraftType,
+}
+
+
+def event_ui_value(enum_type, value):
+    if value is None:
+        return None
+    try:
+        return enum_type(value).value
+    except ValueError:
+        return value
+
+
+class EventTripType(str, Enum):
+    one_way = "ONE_WAY"
+    round_trip = "ROUND_TRIP"
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            key = "_".join(value.strip().upper().replace("-", " ").replace("_", " ").split())
+            if key in {"ONE_WAY", "ONEWAY", "SINGLE", "SINGLE_TRIP"}:
+                return cls.one_way
+            if key in {"ROUND_TRIP", "ROUNDTRIP", "ROUND", "RETURN", "RETURN_TRIP"}:
+                return cls.round_trip
+        return None
 
 
 class AircraftModel(str, Enum):
@@ -85,7 +136,7 @@ class EventFields(BaseModel):
     aircraft_type: AircraftType | None = Field(default=None, validation_alias=AliasChoices('aircraftKind', 'aircraft_type'))
     aircraft_model: AircraftModel | None = Field(default=None, validation_alias=AliasChoices('preferredAircraft', 'aircraft_model'))
     aircraft_passengers: int | None = Field(default=None, validation_alias=AliasChoices('passengerCount', 'aircraft_passengers'))
-    flight_type: str | None = Field(default=None, validation_alias=AliasChoices('tripType', 'flight_type'))
+    flight_type: EventTripType | None = Field(default=None, validation_alias=AliasChoices('tripType', 'flight_type'))
     departure_location: str | None = Field(default=None, validation_alias=AliasChoices('departure', 'departure_location'))
     event_destination: str | None = Field(default=None, validation_alias=AliasChoices('destination', 'event_destination'))
     preferred_flight_date: str | None = Field(default=None, validation_alias=AliasChoices('departureDate', 'preferred_flight_date'))
@@ -125,6 +176,9 @@ class EventFields(BaseModel):
     alternate_contact_number: str | None = Field(default=None, validation_alias=AliasChoices('alternatePhone', 'alternate_contact_number'))
     preferred_contact_method: str | None = Field(default=None, validation_alias=AliasChoices('preferredContactMethod', 'preferred_contact_method'))
     contact_notes: str | None = Field(default=None, validation_alias=AliasChoices('contactNotes', 'contact_notes'))
+    return_date: str | None = Field(default=None, alias="returnDate")
+    return_time: str | None = Field(default=None, alias="returnTime")
+    terms_acknowledged: bool | None = Field(default=None, alias="acknowledged")
     
 
 
@@ -221,7 +275,8 @@ def fetch_event(db: Session, event_id: UUID):
         for passenger in passenger_rows
     ]
     # Translate database columns to the UI field names once.
-    event_data['subtype'] = event_data.pop('event_type', None)
+    event_data['subtype'] = event_ui_value(EventType, event_data.pop('event_type', None))
+    event_data['timing'] = event_ui_value(Timing, event_data.get('timing'))
     event_data['purpose'] = event_data.pop('event_purpose', None)
     event_data['eventName'] = event_data.pop('occasion_name', None)
     event_data['experienceName'] = event_data.pop('selected_experience', None)
@@ -237,10 +292,10 @@ def fetch_event(db: Session, event_id: UUID):
     event_data['dateFlexibility'] = event_data.pop('date_flexibility', None)
     event_data['eventNotes'] = event_data.pop('event_notes', None)
     event_data['totalAttendees'] = event_data.pop('number_of_people', None)
-    event_data['aircraftKind'] = event_data.pop('aircraft_type', None)
+    event_data['aircraftKind'] = event_ui_value(AircraftType, event_data.pop('aircraft_type', None))
     event_data['preferredAircraft'] = event_data.pop('aircraft_model', None)
     event_data['passengerCount'] = event_data.pop('aircraft_passengers', None)
-    event_data['tripType'] = event_data.pop('flight_type', None)
+    event_data['tripType'] = event_ui_value(EventTripType, event_data.pop('flight_type', None))
     event_data['departure'] = event_data.pop('departure_location', None)
     event_data['destination'] = event_data.pop('event_destination', None)
     event_data['departureDate'] = event_data.pop('preferred_flight_date', None)
@@ -276,6 +331,9 @@ def fetch_event(db: Session, event_id: UUID):
     event_data['contactNotes'] = event_data.pop('contact_notes', None)
     event_data.pop("title", None)
     event_data.pop("description", None)
+    event_data['returnDate'] = event_data.pop('return_date', None)
+    event_data['returnTime'] = event_data.pop('return_time', None)
+    event_data['acknowledged'] = event_data.pop('terms_acknowledged', False)
     return event_data
 
 
@@ -309,6 +367,9 @@ def normalize_event_fields(data: dict):
             value = data.pop(alias)
             if column not in data:
                 data[column] = value
+    for field, enum_type in EVENT_ENUM_FIELDS.items():
+        if field in data:
+            data[field] = enum_type(data[field]).database_value
     validate_event_fields(data)
     return data
 
@@ -398,7 +459,7 @@ def create_event(
     aircraft_type: AircraftType | None = Form(None, alias="aircraftKind"),
     aircraft_model: AircraftModel | None = Form(None, alias="preferredAircraft"),
     aircraft_passengers: int | None = Form(None, alias="passengerCount"),
-    flight_type: str | None = Form(None, alias="tripType"),
+    flight_type: EventTripType | None = Form(None, alias="tripType"),
     departure_location: str | None = Form(None, alias="departure"),
     event_destination: str | None = Form(None, alias="destination"),
     preferred_flight_date: str | None = Form(None, alias="departureDate"),
@@ -438,6 +499,9 @@ def create_event(
     alternate_contact_number: str | None = Form(None, alias="alternatePhone"),
     preferred_contact_method: str | None = Form(None, alias="preferredContactMethod"),
     contact_notes: str | None = Form(None, alias="contactNotes"),
+    return_date: str | None = Form(None, alias="returnDate"),
+    return_time: str | None = Form(None, alias="returnTime"),
+    terms_acknowledged: bool | None = Form(None, alias="acknowledged"),
     db: Session = Depends(get_db),
 ):
     data = {
@@ -501,6 +565,9 @@ def create_event(
         "alternate_contact_number": alternate_contact_number,
         "preferred_contact_method": preferred_contact_method,
         "contact_notes": contact_notes,
+        "return_date": return_date,
+        "return_time": return_time,
+        "terms_acknowledged": terms_acknowledged,
     }
     saved_name = None
     try:

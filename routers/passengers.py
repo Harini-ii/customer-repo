@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from rate_limiter import limiter
+from routers.auth import get_current_user
 
 router = APIRouter(prefix='/api/passengers', tags=['Passenger'])
 logger = logging.getLogger(__name__)
@@ -29,10 +30,16 @@ class DocumentType(str, Enum):
 
 
 class PassengerType(str, Enum):
-    oldage = 'Oldage'
-    adult = 'Adult'
-    teenager = 'Teenager'
-    child = 'Child'
+    adult = 'ADULT'
+    child = 'CHILD'
+    infant = 'INFANT'
+    unaccompanied_minor = 'UNACCOMPANIED_MINOR'
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            return cls.__members__.get(value.strip().lower())
+        return None
 
 
 class PassengerRequest(BaseModel):
@@ -79,6 +86,9 @@ def document(db, document_id, lock=False):
 
 def format_passenger(row):
     result = dict(row)
+    passenger_type = result.get('passenger_type')
+    if passenger_type in ('Adult', 'Child'):
+        result['passenger_type'] = passenger_type.upper()
     result.update({
         "id": str(result["passenger_id"]),
         "full_legal_name": result.get("full_name"),
@@ -92,7 +102,7 @@ def format_passenger(row):
 
 
 def public_document(row):
-    result = {key: value for key, value in dict(row).items() if key != 'storage_path'}
+    result = {key: value for key, value in dict(row).items() if key not in ('storage_path', 'uploaded_by_legacy')}
     result["original_filename"] = result.pop("documents", None)
     return result
 
@@ -243,14 +253,16 @@ def upload_passenger_documents(
     issuing_country: str | None = Form(None),
     issue_date: date | None = Form(None),
     expiry_date: date | None = Form(None),
-    uploaded_by: int | None = Form(None, gt=0),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     saved = []
     records = []
     try:
         person = passenger(db, passenger_id, lock=True)
-        customer_request(db, request_id)
+        linked_request = customer_request(db, request_id)
+        if str(linked_request.get('customer_id')) != str(current_user['id']):
+            raise HTTPException(403, 'You can only upload documents for your own requests.')
         if str(person['request_id']) != str(request_id):
             raise HTTPException(400, 'Request ID must match the passenger request.')
         validate_dates(issue_date, expiry_date)
@@ -260,7 +272,7 @@ def upload_passenger_documents(
             values = save_file(upload, saved)
             values.update(passenger_id=passenger_id, request_id=request_id, document_type=document_type,
                           document_reference=document_reference, issuing_country=issuing_country,
-                          issue_date=issue_date, expiry_date=expiry_date, uploaded_by=uploaded_by)
+                          issue_date=issue_date, expiry_date=expiry_date, uploaded_by=UUID(str(current_user['id'])))
             columns = ', '.join(values)
             params = ', '.join(':' + key for key in values)
             records.append(public_document(db.execute(text(
@@ -321,28 +333,33 @@ def update_document(
     issuing_country: str | None = Form(None),
     issue_date: date | None = Form(None),
     expiry_date: date | None = Form(None),
-    uploaded_by: int | None = Form(None, gt=0),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     saved = []
     old_path = None
     try:
         existing = document(db, document_id, lock=True)
+        linked_request = customer_request(db, existing['request_id'])
+        if str(linked_request.get('customer_id')) != str(current_user['id']):
+            raise HTTPException(403, 'You can only update documents for your own requests.')
         values = {key: value for key, value in dict(document_type=document_type,
             document_reference=document_reference, issuing_country=issuing_country,
-            issue_date=issue_date, expiry_date=expiry_date, uploaded_by=uploaded_by).items() if value is not None}
+            issue_date=issue_date, expiry_date=expiry_date).items() if value is not None}
         validate_dates(values.get('issue_date', existing['issue_date']),
                        values.get('expiry_date', existing['expiry_date']))
         if uploaded_document is not None:
             values.update(save_file(uploaded_document, saved))
+            values['uploaded_by'] = UUID(str(current_user['id']))
             old_path = existing['storage_path']
         if not values:
             raise HTTPException(400, 'Please select a replacement file or enter changes.')
         values.update(status='pending', rejection_reason=None, verified_by=None,
                       verified_at=None, verification_notes=None)
         assignments = ', '.join(f'{key}=:{key}' for key in values)
-        row = db.execute(text(f'UPDATE {DOCUMENTS} SET {assignments}, '
-            'uploaded_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=:id RETURNING *'),
+        upload_timestamp = 'uploaded_at=CURRENT_TIMESTAMP, ' if uploaded_document is not None else ''
+        row = db.execute(text(f'UPDATE {DOCUMENTS} SET {assignments}, ' + upload_timestamp +
+            'updated_at=CURRENT_TIMESTAMP WHERE id=:id RETURNING *'),
             dict(values, id=document_id)).mappings().one()
         result = public_document(row)
         db.commit()

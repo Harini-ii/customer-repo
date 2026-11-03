@@ -390,13 +390,28 @@ def get_subscription_plans(db: Session = Depends(get_db)):
 
 
 @router.get('/subscriptions/current', summary='Get Current Subscription')
-def get_current_subscription(customer_id: UUID = Depends(require_customer_id), db: Session = Depends(get_db)):
+def get_current_subscription(
+    customer_id: UUID = Depends(require_customer_id),
+    db: Session = Depends(get_db),
+):
     get_customer(db, customer_id)
-    current = next((s for s in fetch_subscriptions(db, customer_id) if s['is_current']), None)
-    return {'booking_access': current is not None,
-            'subscription': format_subscription(current) if current else None,
-            'credits_remaining': get_credit_balance(db, customer_id)}
 
+    current = next(
+        (
+            subscription
+            for subscription in fetch_subscriptions(db, customer_id)
+            if subscription['is_current']
+        ),
+        None,
+    )
+    has_active_subscription = current is not None
+
+    return {
+        'booking_access': has_active_subscription,
+        'subscription_status': 'ACTIVE' if has_active_subscription else 'INACTIVE',
+        'subscription': format_subscription(current) if has_active_subscription else None,
+        'credits_remaining': get_credit_balance(db, customer_id),
+    }
 
 @router.post("/subscriptions/purchase", summary="Purchase Subscription")
 @limiter.limit("50/minute")

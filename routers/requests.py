@@ -93,7 +93,7 @@ REQUEST_COLUMNS = """
     country,
     status,
     created_at,
-    service_sub_type,
+    service_subtype,
     end_date,
     trip_type,
     additional_requirements,
@@ -176,8 +176,64 @@ def parse_json(value, field_name):
     return result
 
 
+class RequestTripType(str, Enum):
+    one_way = "ONE_WAY"
+    round_trip = "ROUND_TRIP"
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            key = "_".join(value.strip().upper().replace("-", " ").replace("_", " ").split())
+            if key in {"ONE_WAY", "ONEWAY", "SINGLE", "SINGLE_TRIP"}:
+                return cls.one_way
+            if key in {"ROUND_TRIP", "ROUNDTRIP", "ROUND", "RETURN", "RETURN_TRIP"}:
+                return cls.round_trip
+        return None
+
+
+def public_trip_type(value):
+    if value is None or value == "":
+        return None
+    try:
+        return RequestTripType(value).value
+    except ValueError:
+        # Preserve unknown historical values rather than guess their meaning.
+        return value
+
+
+class RequestStatus(str, Enum):
+    submitted = "SUBMITTED"
+    under_review = "UNDER_REVIEW"
+    quoted = "QUOTED"
+    confirmed = "CONFIRMED"
+    completed = "COMPLETED"
+    cancelled = "CANCELLED"
+
+
+def public_request_status(value):
+    """Normalize known statuses without mislabelling unknown database values."""
+    if value is None:
+        return None
+    normalized = str(value).strip().upper().replace(" ", "_").replace("-", "_")
+    if normalized == "OPEN":
+        return RequestStatus.submitted.value
+    if normalized == "CANCELED":
+        return RequestStatus.cancelled.value
+    if normalized in {status.value for status in RequestStatus}:
+        return normalized
+    return value
+
+
+def database_request_status(value):
+    """Keep the existing Open value for newly submitted requests."""
+    status = RequestStatus(value)
+    return "Open" if status == RequestStatus.submitted else status.value
+
+
 def with_attachments(db, row):
     result = dict(row)
+    result["status"] = public_request_status(result.get("status"))
+    result["trip_type"] = public_trip_type(result.get("trip_type"))
 
     documents = db.execute(
         text("""
@@ -195,7 +251,6 @@ def with_attachments(db, row):
         {"request_id": result["request_id"]},
     ).mappings().all()
 
-    result["service_subtype"] = result.pop("service_sub_type", None)
     result.pop("request_id", None)
     result["request_documents"] = [dict(document) for document in documents]
     details = result.get("customer_details")
@@ -229,7 +284,7 @@ def create_request(
     destination: str | None = Form(None),
     start_date: date | None = Form(None),
     end_date: date | None = Form(None),
-    trip_type: str | None = Form(None),
+    trip_type: RequestTripType | None = Form(None),
     additional_requirements: str | None = Form(None),
     customer_details: str | None = Form(
         None,
@@ -261,7 +316,6 @@ def create_request(
     for value in (customer_name, customer_email, customer_mobile, country):
         if value is not None and not isinstance(value, str):
             raise HTTPException(400, "Customer contact fields must be strings.")
-    service_sub_type = service_subtype
     # Retain database compatibility without exposing administrative inputs.
     identity_document = mode = access = department = None
     uploaded_attachments = []
@@ -372,7 +426,7 @@ def create_request(
             customer_email,
             customer_mobile,
             country,
-            service_sub_type,
+            service_subtype,
             end_date,
             trip_type,
             additional_requirements,
@@ -405,7 +459,7 @@ def create_request(
             :customer_email,
             :customer_mobile,
             :country,
-            :service_sub_type,
+            :service_subtype,
             :end_date,
             :trip_type,
             :additional_requirements,
@@ -478,9 +532,9 @@ def create_request(
             ),
             "start_date": start_date,
             **contact_details,
-            "service_sub_type": service_sub_type,
+            "service_subtype": service_subtype,
             "end_date": end_date,
-            "trip_type": trip_type,
+            "trip_type": trip_type.value if trip_type is not None else None,
             "additional_requirements": additional_requirements,
             "customer_details": (
                 json.dumps(customer_details)
@@ -672,10 +726,10 @@ class UpdateRequestDetails(BaseModel):
     departure: str | None = None
     destination: str | None = None
     start_date: date | None = None
-    status: str | None = None
+    status: RequestStatus | None = None
     service_subtype: str | None = None
     end_date: date | None = None
-    trip_type: str | None = None
+    trip_type: RequestTripType | None = None
     additional_requirements: str | None = None
     customer_details: dict | None = None
     service_details: dict | list | None = None
@@ -716,8 +770,8 @@ def update_request(
         key: value.value if isinstance(value, Enum) else value
         for key, value in updates.items()
     }
-    if "service_subtype" in updates:
-        updates["service_sub_type"] = updates.pop("service_subtype")
+    if "status" in updates:
+        updates["status"] = database_request_status(updates["status"])
     updates = normalize_request_fields(updates)
     for field in ("customer_name", "customer_email", "customer_mobile", "country"):
         if field in updates and not isinstance(updates[field], str):
